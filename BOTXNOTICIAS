@@ -1,4 +1,7 @@
+import collections
+from email.utils import parsedate_to_datetime
 import logging
+from typing import Dict, Optional
 import colorlog
 from cachetools import TTLCache
 from logging import handlers
@@ -40,13 +43,15 @@ if sys.platform == "win32":
 # Cargar variables de entorno
 load_dotenv(dotenv_path="datos.env")
 
+queue = []  # Cola global para reintentos
+
 # Configuración centralizada
 CONFIG = {
     "API_LIMITS": {
         "MONTHLY_READS": 10000,
         "REQUESTS_PER_WINDOW": 180, # Mantener este valor, Tweepy lo usa internamente
         "RATE_LIMIT_WINDOW_SECONDS": 900,  # Mantener este valor (15 minutos)
-        "TWEETS_PER_DAY": 40, # Reducir el límite diario para no agotar el mensual rápido
+        "TWEETS_PER_DAY": 80, # Reducir el límite diario para no agotar el mensual rápido
         "MONTHLY_POSTS_TOTAL": 1200,  # Reducir el límite mensual total (1500 es el máximo, mejor dejar margen)
     },
     "INTERVALS": {
@@ -917,189 +922,93 @@ async def fetch_news(ctx, number: int):
 executor = ThreadPoolExecutor(max_workers=2)
 
 async def check_api_rate_limit(response_headers=None, category="read", endpoint=None, exception=None):
-    """
-    Verifica los límites de tasa de la API de Twitter/X y calcula el tiempo de espera necesario.
-    Optimizado para el plan Free Trial con límites estrictos.
-    
-    Args:
-        response_headers: Encabezados de la respuesta HTTP (opcional).
-        category: Categoría de la solicitud ("read", "write_en", "write_es").
-        endpoint: Endpoint de la API para contexto en logs (opcional).
-        exception: Excepción capturada, si aplica (por ejemplo, 429).
-    
-    Returns:
-        float: Tiempo de espera en segundos (0 si no es necesario esperar).
-    """
-    global bot_status
-    
-    # Asegurar inicialización
-    if "twitter_rate_limits" not in bot_status:
-        bot_status["twitter_rate_limits"] = {
-            "read": {"remaining": float('inf'), "reset": 0, "limit": CONFIG["API_LIMITS"]["REQUESTS_PER_WINDOW"]},
-            "write_en": {"remaining": float('inf'), "reset": 0, "limit": CONFIG["API_LIMITS"]["REQUESTS_PER_WINDOW"]},
-            "write_es": {"remaining": float('inf'), "reset": 0, "limit": CONFIG["API_LIMITS"]["REQUESTS_PER_WINDOW"]}
-        }
-    
     current_time_ts = time.time()
-    wait_until = bot_status["twitter_wait_until"].get(category, 0)
     
-    # Verificar período de espera
-    if current_time_ts < wait_until:
-        wait_time = wait_until - current_time_ts
-        logging.debug(f"En período de espera para {category} (endpoint: {endpoint or 'unknown'}). Tiempo restante: {wait_time:.1f}s")
-        return wait_time
+    logging.debug(f"Encabezados recibidos para {category}: {response_headers}, Tipo: {type(response_headers)}")
     
-    # Manejar límite mensual
-    if exception and "Usage cap exceeded: Monthly product cap" in str(exception):
-        now = datetime.now()
-        next_month = (now.replace(day=1) + timedelta(days=32)).replace(day=1)
-        wait_time = (next_month - now).total_seconds()
-        bot_status["twitter_wait_until"][category] = current_time_ts + wait_time
-        logging.warning(f"Límite mensual alcanzado para {category} (endpoint: {endpoint or 'unknown'}). Pausando hasta {next_month}")
-        await save_bot_state()
-        return wait_time
-    
-    # Modo de emergencia: pocas lecturas restantes
-    if category == "read" and bot_status["x_api_reads_remaining"] < 100:
-        wait_time = 86400  # Pausar 24 horas
-        bot_status["twitter_wait_until"]["read"] = current_time_ts + wait_time
-        logging.warning(f"Pocas lecturas restantes ({bot_status['x_api_reads_remaining']}). Pausando lecturas por {wait_time}s")
-        await save_bot_state()
-        return wait_time
-    
-    # Procesar encabezados
-    if response_headers:
+    if response_headers and isinstance(response_headers, collections.abc.Mapping):
         try:
-            logging.debug(f"Encabezados completos para {category} (endpoint: {endpoint or 'unknown'}): {response_headers}")
-            # Priorizar Retry-After
+            logging.debug(f"Procesando encabezados para {category}: {response_headers}")
+            # Manejo de Retry-After
             if "Retry-After" in response_headers:
                 retry_after = response_headers["Retry-After"]
                 try:
-                    wait_time = min(int(retry_after) + 5, 300)  # Máximo 5 minutos
-                    bot_status["twitter_wait_until"][category] = current_time_ts + wait_time
-                    logging.info(f"Retry-After detectado para {category} (endpoint: {endpoint or 'unknown'}). Esperando {wait_time}s")
-                    await save_bot_state()
+                    wait_time = min(int(retry_after) + 5, 3600)  # Máximo 1 hora
+                    logging.info(f"Retry-After detectado. Esperando {wait_time}s")
                     return wait_time
                 except ValueError:
-                    from email.utils import parsedate_to_datetime
                     retry_date = parsedate_to_datetime(retry_after)
-                    wait_time = min((retry_date.timestamp() - current_time_ts) + 5, 300) if retry_date else 300
-                    bot_status["twitter_wait_until"][category] = current_time_ts + wait_time
-                    logging.info(f"Retry-After (formato fecha) detectado para {category} (endpoint: {endpoint or 'unknown'}). Esperando {wait_time}s")
-                    await save_bot_state()
+                    wait_time = min((retry_date.timestamp() - current_time_ts) + 5, 3600) if retry_date else 3600
+                    logging.info(f"Retry-After (fecha) detectado. Esperando {wait_time}s")
                     return wait_time
             
-            # Procesar x-rate-limit-*
+            # Manejo de límites de tasa
             remaining = int(response_headers.get("x-rate-limit-remaining", float('inf')))
             reset_ts = int(response_headers.get("x-rate-limit-reset", 0))
-            limit = int(response_headers.get("x-rate-limit-limit", CONFIG["API_LIMITS"]["REQUESTS_PER_WINDOW"]))
-            
-            # Manejar límites inválidos
-            if limit < 10:
-                logging.warning(f"Límite inválido ({limit}) para {category} (endpoint: {endpoint or 'unknown'}). Usando predeterminado: {CONFIG['API_LIMITS']['REQUESTS_PER_WINDOW']}")
-                limit = CONFIG["API_LIMITS"]["REQUESTS_PER_WINDOW"]
-            
-            bot_status["twitter_rate_limits"][category].update({
-                "remaining": remaining,
-                "reset": reset_ts,
-                "limit": limit
-            })
-            
-            # Calcular espera si no hay solicitudes restantes
-            if remaining <= 0 or remaining < (limit * 0.1):
-                wait_time = min((reset_ts - current_time_ts) + 5, 300) if reset_ts else 300  # Máximo 5 minutos
-                bot_status["twitter_wait_until"][category] = current_time_ts + wait_time
-                logging.warning(f"Pocas solicitudes restantes ({remaining}/{limit}) para {category} (endpoint: {endpoint or 'unknown'}). Esperando {wait_time:.1f}s")
-                await save_bot_state()
+            if remaining <= 0 and reset_ts > current_time_ts:
+                wait_time = min((reset_ts - current_time_ts) + 5, 10800)  # Máximo 3 horas
+                logging.warning(f"Límite alcanzado para {category}. Esperando {wait_time:.1f}s")
                 return wait_time
-        except ValueError as e:
-            logging.warning(f"Error procesando encabezados para {category} (endpoint: {endpoint or 'unknown'}): {e}")
         except Exception as e:
-            logging.error(f"Error inesperado procesando encabezados para {category} (endpoint: {endpoint or 'unknown'}): {e}")
-            bot_status["errors"] += 1
-            await save_bot_state()
+            logging.error(f"Error procesando encabezados: {e}")
     
-    # Verificar límites internos
-    if bot_status["api_request_count"] >= CONFIG["API_LIMITS"]["REQUESTS_PER_WINDOW"]:
-        time_elapsed = (datetime.now() - bot_status["api_window_start"]).total_seconds()
-        if time_elapsed < CONFIG["API_LIMITS"]["RATE_LIMIT_WINDOW_SECONDS"]:
-            wait_time = min(CONFIG["API_LIMITS"]["RATE_LIMIT_WINDOW_SECONDS"] - time_elapsed + 5, 300)
-            bot_status["twitter_wait_until"][category] = current_time_ts + wait_time
-            logging.warning(f"Límite de ventana alcanzado para {category} (endpoint: {endpoint or 'unknown'}). Esperando {wait_time}s")
-            await save_bot_state()
-            return wait_time
+    # Respaldo según el tipo de límite
+    if exception and isinstance(exception, tweepy.TooManyRequests):
+        if category.startswith("write"):
+            # Suponer límite diario (50 tweets/día en plan gratuito) si no hay más info
+            wait_time = 86400  # 24 horas
+            logging.warning(f"Posible límite diario alcanzado para {category}. Esperando {wait_time}s por defecto.")
+        else:
+            wait_time = 900  # 15 minutos para otros límites
+            logging.warning(f"No se encontraron encabezados útiles para {category}. Esperando {wait_time}s por defecto.")
+        return wait_time
     
     return 0
 
 async def make_twitter_request(func, *args, category="read", semaphore=None, rate_limit_event=None, endpoint=None, **kwargs):
-    """
-    Realiza una solicitud a la API de Twitter/X con manejo de límites de tasa y reintentos.
-    
-    Args:
-        func: Función de la API de Twitter a ejecutar.
-        category: Categoría de la solicitud ("read", "write_en", "write_es").
-        semaphore: Semáforo para controlar concurrencia.
-        rate_limit_event: Evento para pausar en caso de límite de tasa.
-        endpoint: Endpoint de la API para contexto en logs (opcional).
-        *args, **kwargs: Argumentos para la función de la API.
-    
-    Returns:
-        Resultado de la solicitud a la API.
-    
-    Raises:
-        tweepy.TweepyException: Si la solicitud falla tras todos los intentos.
-    """
     global bot_status
     semaphore = semaphore or (read_semaphore if category == "read" else (write_semaphore_en if category == "write_en" else write_semaphore_es))
     rate_limit_event = rate_limit_event or (read_rate_limit_event if category == "read" else (write_rate_limit_event_en if category == "write_en" else write_rate_limit_event_es))
     
     async with semaphore:
         for attempt in range(5):
+            # Verificar límite antes del intento
             wait_time = await check_api_rate_limit(category=category, endpoint=endpoint)
             if wait_time > 0:
-                logging.debug(f"Esperando {wait_time:.1f}s antes del intento {attempt + 1} para {category} (endpoint: {endpoint or 'unknown'})")
+                logging.debug(f"Esperando {wait_time:.1f}s antes del intento {attempt + 1} para {category}")
                 await asyncio.sleep(wait_time)
             
             if not rate_limit_event.is_set():
-                logging.debug(f"Esperando evento de límite de tasa para {category} (endpoint: {endpoint or 'unknown'})")
                 await rate_limit_event.wait()
             
             try:
                 bot_status["api_request_count"] += 1
-                if category == "read":
-                    bot_status["x_api_reads_remaining"] = max(0, bot_status["x_api_reads_remaining"] - 1)
-                await save_bot_state()
-                
                 result = await asyncio.to_thread(func, *args, **kwargs)
-                response_headers = getattr(getattr(result, 'response', None), 'headers', None) or getattr(result, 'headers', None)
-                if response_headers:
-                    wait_time = await check_api_rate_limit(response_headers=response_headers, category=category, endpoint=endpoint)
-                    if wait_time > 0:
-                        rate_limit_event.clear()
-                        logging.debug(f"Pausando {wait_time:.1f}s tras respuesta para {category} (endpoint: {endpoint or 'unknown'})")
-                        await asyncio.sleep(wait_time)
-                        rate_limit_event.set()
-                return result
-            except tweepy.TooManyRequests as e:
-                response_headers = getattr(e.response, 'headers', None)
+                # Extraer encabezados de la respuesta
+                response_headers = getattr(result, 'response', None).headers if hasattr(result, 'response') else None
+                logging.debug(f"Encabezados en intento exitoso para {category}: {response_headers}")
                 wait_time = await check_api_rate_limit(response_headers=response_headers, category=category, endpoint=endpoint)
                 if wait_time > 0:
                     rate_limit_event.clear()
-                    logging.warning(f"Error 429 en intento {attempt + 1}/5 para {category} (endpoint: {endpoint or 'unknown'}): {e}")
+                    logging.debug(f"Pausando {wait_time:.1f}s tras respuesta para {category}")
+                    await asyncio.sleep(wait_time)
+                    rate_limit_event.set()
+                return result
+            except tweepy.TooManyRequests as e:
+                # Extraer encabezados del error
+                response_headers = getattr(e, 'response', None).headers if hasattr(e, 'response') else None
+                logging.debug(f"Encabezados en error 429 para {category}: {response_headers}")
+                wait_time = await check_api_rate_limit(response_headers=response_headers, category=category, endpoint=endpoint, exception=e)
+                if wait_time > 0:
+                    rate_limit_event.clear()
+                    logging.warning(f"Error 429 en intento {attempt + 1}/5 para {category}: {e}. Esperando {wait_time}s")
                     await asyncio.sleep(wait_time)
                     rate_limit_event.set()
                 elif attempt == 4:
-                    logging.error(f"Fallo tras 5 intentos por 429 para {category} (endpoint: {endpoint or 'unknown'}): {e}")
+                    logging.error(f"Fallo tras 5 intentos por 429 para {category}: {e}")
                     raise
-            except tweepy.TweepyException as e:
-                logging.warning(f"Error en intento {attempt + 1}/5 para {category} (endpoint: {endpoint or 'unknown'}): {e}")
-                if attempt == 4:
-                    logging.error(f"Fallo tras 5 intentos para {category} (endpoint: {endpoint or 'unknown'}): {e}")
-                    raise
-                await asyncio.sleep(2 ** attempt)
             except Exception as e:
-                logging.error(f"Error inesperado en intento {attempt + 1}/5 para {category} (endpoint: {endpoint or 'unknown'}): {e}")
-                bot_status["errors"] += 1
+                logging.error(f"Error inesperado en intento {attempt + 1}/5 para {category}: {e}")
                 if attempt == 4:
                     raise
                 await asyncio.sleep(2 ** attempt)
@@ -1253,9 +1162,21 @@ async def update_twitter_feeds():
 def clean_text(text: str) -> str:
     if not text or not isinstance(text, str):
         return ""
-    text = re.sub(r'<.*?>', '', text)
-    text = re.sub(r'[^\w\s.,!?]', '', text)
+    text = re.sub(r'<.*?>', '', text)  # Eliminar etiquetas HTML
+    text = re.sub(r'[^\w\s.,!?\'"-]', '', text)  # Mantener comillas y guiones
     return text.strip()
+
+def post_process_translation(translated_text: str) -> str:
+    corrections = {
+        "interruptor": "Switch",
+        "deja caer": "no incluirá",
+        "preordenes": "preventas",
+        "carro": "cartucho",
+        "añade el": "añade soporte para"
+    }
+    for wrong, correct in corrections.items():
+        translated_text = translated_text.replace(wrong, correct)
+    return translated_text
 
 def translate_text(text: str) -> str:
     cleaned_text = clean_text(text)
@@ -1273,10 +1194,6 @@ def translate_text(text: str) -> str:
     except Exception as e:
         logging.error(f"Error en MarianMT para texto '{cleaned_text[:50]}...': {e}")
         return cleaned_text
-
-async def translate_to_spanish(text: str) -> str:
-    loop = asyncio.get_event_loop()
-    return await loop.run_in_executor(executor, translate_text, text)
 
 async def fetch_url(session: aiohttp.ClientSession, url: str) -> bytes | None:
     """
@@ -1669,55 +1586,62 @@ async def optimize_image(image_data: bytes) -> bytes | None:
         # await save_bot_state()
         return None
 
+async def translate_to_spanish(text: str) -> str:
+    cleaned_text = clean_text(text)
+    if not cleaned_text:
+        return text
+    loop = asyncio.get_event_loop()
+    translated = await loop.run_in_executor(executor, translate_text, cleaned_text)
+    translated = post_process_translation(translated)
+    return translated
+
 def get_summary_sentences(summary: str, max_chars: int) -> str:
+    """
+    Divide el resumen en oraciones y selecciona las que caben en max_chars.
+    """
     sentences = re.split(r'(?<=[.!?])\s+', summary)
     selected_sentences = []
     current_length = 0
     for sentence in sentences:
-        sentence_length = len(sentence) + 1
+        sentence_length = len(sentence) + 1  # +1 para el espacio
         if current_length + sentence_length > max_chars:
             break
         selected_sentences.append(sentence)
         current_length += sentence_length
     return " ".join(selected_sentences).strip()
 
+
 async def generate_detailed_tweet(title: str, summary: str, url: str, trends: list[str], language: str) -> str:
-    global bot_status
-    bot_status["last_task"] = f"Generando tweet para: {title[:50]} en {language}"
-    try:
-        is_gaming = any(kw in title.lower() for kw in KEYWORDS_EN["gaming"])
-        category = "Gaming" if is_gaming else "Tech"
-        emojis = "🎮" if is_gaming else "💻"
+    is_gaming = any(kw in title.lower() for kw in ["game", "nintendo", "playstation", "xbox"])
+    emojis = "🎮" if is_gaming else "💻"
 
-        if language == 'es':
-            title_text = await translate_to_spanish(title)
-            summary_text = await translate_to_spanish(clean_text(summary))
-            hashtags_prefix = "#Noticias"
-        else:
-            title_text = title
-            summary_text = clean_text(summary)
-            hashtags_prefix = "#News"
+    if language == 'es':
+        title_text = await translate_to_spanish(title)
+        summary_text = await translate_to_spanish(clean_text(summary))
+    else:
+        title_text = title
+        summary_text = clean_text(summary)
 
-        trend_tags = [f"#{trend.capitalize()}" for trend in trends if trend.lower() in (title + summary).lower()]
-        hashtags = [hashtags_prefix + category] + trend_tags[:2]
-        hashtags_str = " ".join(hashtags)
+    # Hashtags basados en palabras clave
+    keywords = re.findall(r'\b\w+\b', (title + " " + summary).lower())
+    relevant_keywords = [kw for kw in keywords if len(kw) > 3 and kw not in ["the", "and"]]
+    hashtags = [f"#{kw.capitalize()}" for kw in relevant_keywords[:2]]
+    hashtags_str = " ".join(hashtags)
 
-        short_url = await shorten_url(url) if url and not url.startswith(("patchbot://", "discord://")) else ""
-        fixed_length = len(emojis) + 1 + len(title_text) + 2 + len(hashtags_str) + (len(short_url) + 1 if short_url else 0)
-        available_chars_for_summary = CONFIG["TWEET"]["MAX_LENGTH"] - fixed_length - 5
-        summary_to_include = get_summary_sentences(summary_text, available_chars_for_summary)
+    short_url = await shorten_url(url) if url else ""
+    fixed_length = len(emojis) + 1 + len(title_text) + 2 + len(hashtags_str) + (len(short_url) + 1 if short_url else 0)
+    available_chars = 280 - fixed_length - len(" ¡Descubre más! ") - 5
 
-        tweet = f"{emojis} {title_text}. {summary_to_include} {hashtags_str} {short_url}".strip()
-        if len(tweet) > CONFIG["TWEET"]["MAX_LENGTH"]:
-            tweet = tweet[:CONFIG["TWEET"]["MAX_LENGTH"]-3] + "..."
-        
-        logging.info(f"Tweet generado ({len(tweet)} chars): {tweet}")
-        return tweet
-    except Exception as e:
-        logging.error(f"Error generando tweet en {language} para '{title[:50]}': {e}", exc_info=True)
-        bot_status["errors"] += 1
-        save_bot_state_sync(cursor, conn)
-        return f"{emojis} {title[:100]} {hashtags_str}"[:CONFIG["TWEET"]["MAX_LENGTH"]]
+    summary_to_include = summary_text[:available_chars]
+    if len(summary_text) > available_chars:
+        summary_to_include = summary_to_include.rsplit(' ', 1)[0] + "..."
+
+    cta = "¡Descubre más!" if language == 'es' else "Find out more!"
+    tweet = f"{emojis} {title_text}. {summary_to_include} {cta} {hashtags_str} {short_url}".strip()
+    if len(tweet) > 280:
+        tweet = tweet[:277] + "..."
+
+    return tweet
 
 async def generate_weather_tweet(language: str, source_url: str) -> str:
     global bot_status
@@ -2479,7 +2403,7 @@ async def process_single_news(session: aiohttp.ClientSession, entry: dict, news_
     logging.debug(f"Procesando noticia: {title[:50]} (source: {entry.get('source', 'Unknown')})")
     
     score = await score_news(entry, trends)
-    if score < (40 if entry.get("is_tweet", False) else 20):
+    if score < (6 if entry.get("is_tweet", False) else 2):
         logging.info(f"{'Tweet' if entry.get('is_tweet', False) else 'News'} '{title[:50]}' descartado por baja puntuación ({score:.1f})")
         return False
     
@@ -2488,32 +2412,37 @@ async def process_single_news(session: aiohttp.ClientSession, entry: dict, news_
         category = f"write_{language}"
         # Verificar restricciones de publicación
         if time.time() < bot_status["twitter_wait_until"].get(category, 0):
-            logging.debug(f"No se puede publicar en {language}: En período de espera hasta {bot_status['twitter_wait_until'][category]}")
+            logging.info(f"No se puede publicar en {language}: En período de espera hasta {datetime.fromtimestamp(bot_status['twitter_wait_until'][category]).strftime('%H:%M:%S')}")
             continue
         if bot_status["daily_tweets_total"] >= CONFIG["API_LIMITS"]["TWEETS_PER_DAY"]:
-            logging.debug(f"No se puede publicar en {language}: Límite diario alcanzado ({bot_status['daily_tweets_total']}/{CONFIG['API_LIMITS']['TWEETS_PER_DAY']})")
+            logging.info(f"No se puede publicar en {language}: Límite diario alcanzado ({bot_status['daily_tweets_total']}/{CONFIG['API_LIMITS']['TWEETS_PER_DAY']})")
             continue
         if bot_status["monthly_posts_en"] + bot_status["monthly_posts_es"] >= CONFIG["API_LIMITS"]["MONTHLY_POSTS_TOTAL"]:
-            logging.debug(f"No se puede publicar en {language}: Límite mensual alcanzado")
+            logging.info(f"No se puede publicar en {language}: Límite mensual alcanzado ({bot_status['monthly_posts_en'] + bot_status['monthly_posts_es']}/{CONFIG['API_LIMITS']['MONTHLY_POSTS_TOTAL']})")
             continue
         last_tweet_time = bot_status.get(f"last_tweet_time_{language}")
         if last_tweet_time and (time.time() - last_tweet_time.timestamp()) < CONFIG["INTERVALS"]["TWEET_COOLDOWN_SECONDS"]:
-            logging.debug(f"No se puede publicar en {language}: En período de enfriamiento")
+            remaining = CONFIG["INTERVALS"]["TWEET_COOLDOWN_SECONDS"] - (time.time() - last_tweet_time.timestamp())
+            logging.info(f"No se puede publicar en {language}: En período de enfriamiento ({remaining/60:.1f} minutos restantes)")
             continue
         if await is_published_in_language(title, entry.get("summary", ""), entry.get("link"), entry.get("source", "Unknown"), language):
-            logging.debug(f"Noticia ya publicada en {language}: {title[:50]}")
+            logging.info(f"Noticia ya publicada en {language}: {title[:50]}")
             published_status[language] = True
             continue
         
         logging.info(f"Intentando publicar noticia en {language}: {title[:50]} (score: {score:.1f})")
-        if await publish_news(session, entry, news_hash, score, language, trends):
-            published_status[language] = True
-            bot_status[f"monthly_posts_{language}"] += 1
-            bot_status["daily_tweets_total"] += 1
-            bot_status[f"last_tweet_time_{language}"] = datetime.now()
-            logging.info(f"Noticia publicada exitosamente en {language}: {title[:50]}")
-        else:
-            logging.warning(f"Fallo al publicar noticia en {language}: {title[:50]}")
+        try:
+            if await publish_news(session, entry, news_hash, score, language, trends):
+                published_status[language] = True
+                bot_status[f"monthly_posts_{language}"] += 1
+                bot_status["daily_tweets_total"] += 1
+                bot_status[f"last_tweet_time_{language}"] = datetime.now()
+                logging.info(f"Noticia publicada exitosamente en {language}: {title[:50]}")
+            else:
+                logging.warning(f"Fallo al publicar noticia en {language}: {title[:50]}. Intentando encolar")
+        except Exception as e:
+            logging.error(f"Error inesperado publicando en {language}: {title[:50]}: {e}", exc_info=True)
+            bot_status["errors"] += 1
     
     if any(published_status.values()):
         source_usage[entry.get("source", "Unknown")] += 1
@@ -2528,13 +2457,19 @@ async def process_single_news(session: aiohttp.ClientSession, entry: dict, news_
             if not await run_db_sync(cursor.fetchone):
                 logging.info(f"Encolando noticia para {language}: {title[:50]}")
                 trends_json = json.dumps(trends)
-                await run_db_sync(
-                    cursor.execute,
-                    '''INSERT INTO cola_publicacion (title, summary, url, image_data, news_hash, score, source, language, trends)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)''',
-                    (title, entry.get("summary", ""), entry.get("link"), None, news_hash, score, entry.get("source", "Unknown"), language, trends_json)
-                )
-                await run_db_sync(conn.commit)
+                try:
+                    await run_db_sync(
+                        cursor.execute,
+                        '''INSERT INTO cola_publicacion (title, summary, url, image_data, news_hash, score, source, language, trends)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)''',
+                        (title, entry.get("summary", ""), entry.get("link"), None, news_hash, score, entry.get("source", "Unknown"), language, trends_json)
+                    )
+                    await run_db_sync(conn.commit)
+                    logging.debug(f"Noticia encolada correctamente para {language}: {title[:50]}")
+                except Exception as e:
+                    logging.error(f"Error encolando noticia para {language}: {title[:50]}: {e}")
+                    bot_status["errors"] += 1
+    
     await save_bot_state()
     return False
 
@@ -2620,10 +2555,6 @@ async def process_discord_news(channel_id: int, trends: list[str]) -> list[dict]
     return processed_news
 
 async def process_news():
-    """
-    Procesa noticias de diversas fuentes, las puntúa y decide cuáles publicar
-    en X, respetando los límites de la API y evitando duplicados.
-    """
     global bot_status
     bot_status["tasks_running"] += 1
     bot_status["last_task"] = "Procesando noticias"
@@ -2633,127 +2564,71 @@ async def process_news():
         current_time = datetime.now()
         current_time_ts = time.time()
 
-        # Resetear contadores diarios si es un nuevo día
+        # Resetear contadores diarios
         if current_time.day != bot_status["last_reset"].day:
             bot_status["daily_tweets_total"] = 0
             bot_status["last_reset"] = current_time.replace(hour=0, minute=0, second=0, microsecond=0)
+            bot_status["recent_tweets_en"] = []
+            bot_status["recent_tweets_es"] = []
             logging.info("Contadores diarios de tweets reseteados")
             save_bot_state_sync(cursor, conn)
 
-        # Resetear contadores mensuales si es un nuevo mes
+        # Resetear contadores mensuales
         if current_time.month != bot_status["monthly_reset"].month:
             bot_status["monthly_posts_en"] = 0
             bot_status["monthly_posts_es"] = 0
+            bot_status["x_api_reads_remaining"] = CONFIG["API_LIMITS"]["MONTHLY_READS"]
+            bot_status["x_api_writes_remaining"] = CONFIG["API_LIMITS"]["MONTHLY_POSTS_TOTAL"]
             bot_status["monthly_reset"] = current_time.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
-            logging.info("Contadores mensuales de posts reseteados")
+            logging.info("Contadores mensuales reseteados")
             save_bot_state_sync(cursor, conn)
-
-        # Verificar si las lecturas de Twitter/X están pausadas
-        twitter_read_paused = current_time_ts < bot_status["twitter_wait_until"].get("read", 0)
-        if twitter_read_paused:
-             logging.info(f"Lecturas de Twitter/X pausadas hasta {datetime.fromtimestamp(bot_status['twitter_wait_until']['read']).strftime('%Y-%m-%d %H:%M:%S')}. Omitiendo actualización de feeds de Twitter.")
 
         trends = await get_trending_keywords()
         all_news = []
 
         async with aiohttp.ClientSession() as session:
-            # 1. Obtener noticias de fuentes que NO consumen límites de lectura de X
-            # Procesar Discord (no consume API de X)
-            async with discord_processing_lock: # Asegurar exclusión mutua al acceder a discord_news
-                 for channel_id in [DISCORD_CHANNEL_1, DISCORD_CHANNEL_2]:
-                     all_news.extend(await process_discord_news(channel_id, trends))
+            # Procesar Discord
+            async with discord_processing_lock:
+                for channel_id in [DISCORD_CHANNEL_1, DISCORD_CHANNEL_2]:
+                    all_news.extend(await process_discord_news(channel_id, trends))
 
-            # Procesar RSS (no consume API de X)
-            # process_rss_feeds ahora maneja la verificación de duplicados internamente
+            # Procesar RSS
             all_news.extend(await process_rss_feeds(session, trends))
 
-            # 2. Obtener noticias de fuentes que SÍ consumen límites de lectura de X (Twitter/X)
-            # Solo actualizar feeds de Twitter si las lecturas no están pausadas y hay lecturas mensuales restantes
-            if not twitter_read_paused and bot_status["x_api_reads_remaining"] > 0:
-                 twitter_news = await update_twitter_feeds()
-                 all_news.extend(twitter_news)
-            elif bot_status["x_api_reads_remaining"] <= 0:
-                 logging.warning("Límite mensual de lecturas de X API agotado. Omitiendo actualización de feeds de Twitter.")
-
+            # Procesar Twitter si no está pausado y hay lecturas disponibles
+            twitter_read_paused = current_time_ts < bot_status["twitter_wait_until"].get("read", 0)
+            if not twitter_read_paused and bot_status["x_api_reads_remaining"] > 0 and await check_api_rate_limit("read"):
+                try:
+                    twitter_news = await update_twitter_feeds()
+                    all_news.extend(twitter_news)
+                except Exception as e:
+                    logging.warning(f"No se pudieron obtener tweets de Twitter/X: {e}. Continuando con RSS y Discord.")
+            else:
+                logging.info("Lecturas de Twitter/X pausadas o límite agotado. Usando solo RSS y Discord.")
 
             if not all_news:
                 logging.info("No hay noticias nuevas para procesar en este ciclo.")
                 return
 
-            # 3. Puntuar y ordenar todas las noticias obtenidas.
-            # La verificación de duplicados para RSS y Discord se hizo en sus respectivas funciones.
-            # La verificación de duplicados para Twitter se hace en update_twitter_feeds/generate_rss_feed.
-            # Por lo tanto, all_news ya debería contener solo noticias no duplicadas.
+            # Puntuar y ordenar noticias
             scored_items = []
             for entry in all_news:
-                # Aquí ya no necesitamos verificar is_duplicate si se hizo en las funciones de origen.
-                # Solo puntuamos y añadimos si la puntuación es > 0.
                 score = await score_news(entry, trends)
-                if score > 0: # Solo considerar noticias con puntuación positiva
+                if score > 0:
                     scored_items.append((entry, score))
 
-
-            # Ordenar: Discord (puntuación alta primero) > RSS (puntuación alta primero) > Twitter (puntuación alta primero)
-            # La clave de ordenamiento ya prioriza Discord y RSS sobre Twitter
             scored_items.sort(key=lambda x: (
-                x[0].get("is_discord", False), # True (Discord) primero
-                not x[0].get("is_tweet", False), # True (no-tweet: Discord, RSS) primero
-                x[1] # Luego por puntuación descendente
+                x[0].get("is_discord", False),
+                not x[0].get("is_tweet", False),
+                x[1]
             ), reverse=True)
 
-            # 4. Procesar y publicar las noticias, respetando los límites de escritura de X y evitando duplicados
+            # Procesar noticias
             processed_count = 0
             for entry, score in scored_items:
-                # Verificar límites de publicación de X antes de procesar CADA noticia
-                current_time_ts = time.time()
-                twitter_write_en_paused = current_time_ts < bot_status["twitter_wait_until"].get("write_en", 0)
-                twitter_write_es_paused = current_time_ts < bot_status["twitter_wait_until"].get("write_es", 0)
-                twitter_limits_exceeded = (
-                    bot_status["daily_tweets_total"] >= CONFIG["API_LIMITS"]["TWEETS_PER_DAY"] or
-                    bot_status["monthly_posts_en"] + bot_status["monthly_posts_es"] >= CONFIG["API_LIMITS"]["MONTHLY_POSTS_TOTAL"]
-                )
-
-                if twitter_limits_exceeded:
-                    logging.info(f"Límite de publicación de X (diario o mensual total) alcanzado. Deteniendo procesamiento de noticias.")
-                    break # Detener el bucle si no se pueden hacer más publicaciones
-
-                # Decidir si procesar la noticia basada en su tipo y si la escritura está pausada
-                should_process = False
-                if entry.get("is_tweet", False):
-                    # Si es un tweet, solo procesar si la escritura NO está pausada en *al menos* un idioma
-                    if not (twitter_write_en_paused and twitter_write_es_paused):
-                         # Opcional: Añadir un umbral de puntuación más alto para reposts si quieres ser más selectivo
-                         # if score >= 60:
-                         should_process = True
-                         # else:
-                         #      logging.debug(f"Tweet con puntuación baja ({score:.1f}). Omitiendo: {entry['title'][:50]}")
-                    else:
-                         logging.debug(f"Escritura en X pausada en ambos idiomas. Omitiendo tweet: {entry['title'][:50]}")
-
-                else: # Noticias de Discord o RSS
-                     # Procesar si la escritura NO está pausada en *al menos* un idioma
-                     if not (twitter_write_en_paused and twitter_write_es_paused):
-                         # Puedes usar un umbral de puntuación más bajo para estas fuentes
-                         if score >= 30:
-                             should_process = True
-                         else:
-                             logging.debug(f"Noticia RSS/Discord con puntuación baja ({score:.1f}). Omitiendo: {entry['title'][:50]}")
-                     else:
-                         logging.debug(f"Escritura en X pausada en ambos idiomas. Omitiendo noticia RSS/Discord: {entry['title'][:50]}")
-
-
-                if should_process:
-                    # process_single_news intentará publicar en ambos idiomas si es posible y los límites lo permiten
-                    # y maneja la lógica de encolado y verificación de publicación por idioma.
-                    if await process_single_news(session, entry, entry["hash"], trends):
-                         # process_single_news retorna True si se publicó en al menos un idioma
-                        processed_count += 1
-                        # Esperar un poco después de una publicación exitosa para no saturar
-                        await asyncio.sleep(CONFIG["INTERVALS"]["API_REQUEST_DELAY_SECONDS"])
-                    else:
-                        # Si process_single_news falla en ambos idiomas y no se encola (ej. ya publicado en otro idioma)
-                        pass # Continuar con la siguiente noticia
-
+                if await process_single_news(session, entry, entry["hash"], trends):
+                    processed_count += 1
+                    await asyncio.sleep(CONFIG["INTERVALS"]["API_REQUEST_DELAY_SECONDS"])
 
             bot_status["recent_processed_news"] = processed_count
             logging.info(f"Ciclo de procesamiento de noticias completado. Elementos procesados para publicación: {processed_count}")
