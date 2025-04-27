@@ -5,6 +5,8 @@ from typing import Dict, Optional
 import colorlog
 from cachetools import TTLCache
 from logging import handlers
+from transformers import DistilBertTokenizer, DistilBertForSequenceClassification
+from functools import partial
 import feedparser
 import requests
 from urllib.parse import urljoin
@@ -84,8 +86,8 @@ CONFIG = {
     },
     "WEATHER": {
         "POST_HOUR": 22,  # Hora de publicación (22:00)
-        "MAP_URL": "https://www.tiempo.com/mapas/pronostico_espana.png",
-        "SOURCE_URL": "https://www.tiempo.com/mapa_espana.htm",
+        "MAP_URL": "https://www.eltiempo.es/lluvia",
+        "SOURCE_URL": "https://www.eltiempo.es",
         "MAX_IMAGE_SIZE": 5 * 1024 * 1024,
     }
 }
@@ -271,6 +273,29 @@ write_rate_limit_event_es = asyncio.Event()
 read_rate_limit_event.set()  # Inicialmente no pausado
 write_rate_limit_event_en.set()
 write_rate_limit_event_es.set()
+
+def print_section_header(title, color="blue"):
+    """Imprime un encabezado de sección con estilo futurista."""
+    color_codes = {
+        "blue": "34",
+        "green": "32",
+        "red": "31",
+        "cyan": "36",
+        "magenta": "35"
+    }
+    color_code = color_codes.get(color, "34")  # Default a azul si el color no está definido
+    print(f"\033[1;{color_code}m{'═' * 60}\033[0m")
+    print(f"\033[1;{color_code}m🚀 {title:^56} 🚀\033[0m")
+    print(f"\033[1;{color_code}m{'═' * 60}\033[0m")
+
+def print_progress_bar(current, total, label, critical_threshold=80):
+    """Imprime una barra de progreso con colores según el porcentaje."""
+    percent = (current / total) * 100 if total > 0 else 0
+    bar_length = 40
+    filled = int(bar_length * percent / 100)
+    bar = '█' * filled + '─' * (bar_length - filled)
+    color = "32" if percent < critical_threshold else "31"  # Verde si <80%, rojo si ≥80%
+    print(f"\033[1m{label:<20}\033[0m \033[{color}m[{bar}] {percent:>5.1f}%\033[0m")
 
 def get_dynamic_update_interval(account=None):
     """
@@ -597,7 +622,7 @@ async def on_message(message):
                     "is_discord": True
                 })
                 logging.info(f"Noticia añadida desde {source}: {title[:50]} - {url}")
-
+        
         # Procesar URLs en texto plano
         elif urls:
             content = " ".join(message.content.lower().split())
@@ -1419,27 +1444,56 @@ def calculate_freshness(news_date: datetime) -> float:
         save_bot_state_sync(cursor, conn)
         return 0
 
-async def is_duplicate(title: str, summary: str, url: str, source: str) -> bool:
+async def is_duplicate(title: str, summary: str, url: str, source: str, entry_date: datetime = None) -> bool:
+    """
+    Verifica si una noticia es un duplicado basándose en hash.
+
+    Args:
+        title (str): Título de la noticia.
+        summary (str): Resumen de la noticia.
+        url (str): URL de la noticia.
+        source (str): Fuente de la noticia.
+        entry_date (datetime, optional): Fecha de publicación de la noticia.
+
+    Returns:
+        bool: True si la noticia es un duplicado, False si es nueva.
+    """
     news_hash = hashlib.sha256((title + summary + url + source).encode()).hexdigest()
     cache_key = f"{news_hash}_duplicate"
-    if cache_key in duplicate_cache:
-        return duplicate_cache[cache_key]
-    
-    normalized_title = normalize_text_for_duplicate_check(title)
-    normalized_summary = normalize_text_for_duplicate_check(summary)
+
+    # Verificar si es reciente (dentro de 24 horas) y está en caché
+    if entry_date and (datetime.now() - entry_date).total_seconds() < 86400:  # 24 horas
+        if cache_key in duplicate_cache:
+            logging.debug(f"✅ Duplicado encontrado en caché: {title[:50]}")
+            return duplicate_cache[cache_key]
     
     try:
-        cursor.execute('''SELECT 1 FROM historial WHERE hash = ?''', (news_hash,))
-        result = await run_db_sync(cursor.fetchone)
-        is_duplicate = result is not None
-        duplicate_cache[cache_key] = is_duplicate
+        # Crear un cursor local
+        local_cursor = conn.cursor()
+        try:
+            local_cursor.execute('''SELECT 1 FROM historial WHERE hash = ?''', (news_hash,))
+            result = await run_db_sync(local_cursor.fetchone)
+            is_duplicate = result is not None
+        finally:
+            local_cursor.close()  # Cerrar el cursor explícitamente
+
+        # Almacenar en caché si es reciente
+        if entry_date and (datetime.now() - entry_date).total_seconds() < 86400:
+            duplicate_cache[cache_key] = is_duplicate
+
+        # Registrar resultado
+        if is_duplicate:
+            logging.debug(f"❌ Noticia duplicada: {title[:50]}")
+        else:
+            logging.debug(f"✅ Noticia nueva: {title[:50]}")
+
         return is_duplicate
     except Exception as e:
-        logging.error(f"Error verificando duplicado: {e}")
+        logging.error(f"❌ Error verificando duplicado: {e}", exc_info=True)
         bot_status["errors"] += 1
         await save_bot_state()
         return False
-
+    
 async def is_published_in_language(title: str, summary: str, url: str, source: str, language: str) -> bool:
      """
      Checks if a news item has already been published in a specific language.
@@ -1471,39 +1525,68 @@ async def is_published_in_language(title: str, summary: str, url: str, source: s
          # bot_status["errors"] += 1
          # await save_bot_state()
          return False # Assume not published in case of DB error
+     
+try:
+    tokenizer = DistilBertTokenizer.from_pretrained("distilbert-base-uncased-finetuned-sst-2-english")
+    bert_model = DistilBertForSequenceClassification.from_pretrained("distilbert-base-uncased-finetuned-sst-2-english")
+    bert_model.eval()
+    if torch.cuda.is_available():
+        bert_model.to("cuda")
+    logging.info("Modelo DistilBERT y tokenizer inicializados correctamente.")
+except Exception as e:
+    logging.error(f"Error al inicializar DistilBERT: {e}", exc_info=True)
+    tokenizer = None
+    bert_model = None
 
-async def score_news(entry: dict, trends: list[str]) -> float:
-    global bot_status
-    bot_status["last_task"] = f"Puntuando noticia: {entry['title'][:50]}"
+async def score_news(entry, trends):
+    if tokenizer is None or bert_model is None:
+        logging.error("Modelo DistilBERT o tokenizer no inicializados.")
+        return 0.0
+
     try:
-        title = entry["title"]
-        summary = entry.get("summary", "")
-        source = entry["source"]
-        news_date = entry.get("date", datetime.now())
-        
-        if await is_duplicate(title, summary, entry["link"], source):
-            return 0
-        
-        relevance = calculate_relevance(title, summary)
-        freshness = calculate_freshness(news_date)
-        trend_score = sum(2 for trend in trends if trend.lower() in (title + summary).lower())
-        diversity = max(0.1, 1 - source_usage[source] * 0.05)
-        
-        source_boost = 0
-        if "discord" in source:
-            source_boost = 3.0
-        elif "twitter" in source:
-            source_boost = 2.5
-        else:
-            source_boost = 0.5
-        
-        total_score = (0.4 * relevance + 0.2 * freshness + 0.2 * trend_score + 0.1 * diversity + source_boost)
-        return min(100, total_score * 10)
+        text = entry.get('title', '')
+        if not text:
+            logging.warning("Título de noticia vacío.")
+            return 0.0
+    
+        # Filtrar noticias de gaming/tecnología
+        text_lower = text.lower()
+        if any(keyword in text_lower for keyword in KEYWORDS_EN):
+            logging.debug(f"Noticia descartada por tema de gaming/tecnología: {text}")
+            return 0.0  # Puntuación 0 para descartar
+
+        def run_bert(inputs):
+            with torch.no_grad():
+                outputs = bert_model(**inputs)
+                probs = torch.softmax(outputs.logits, dim=-1)
+                return probs[0][1].item()  # Probabilidad de la clase positiva
+
+        inputs = tokenizer(
+            text,
+            return_tensors="pt",
+            max_length=128,
+            truncation=True,
+            padding=True
+        )
+        if torch.cuda.is_available():
+            inputs = {k: v.to("cuda") for k, v in inputs.items()}
+
+        loop = asyncio.get_running_loop()
+        score = await loop.run_in_executor(None, partial(run_bert, inputs))
+
+        # Ajustar con tendencias
+        trend_score = 0.0
+        for trend in trends:
+            if trend.lower() in text_lower:
+                trend_score += 20.0  # Aumentar puntaje en escala 0-100
+        final_score = min(score * 100 + trend_score, 100.0)  # Escala 0-100
+
+        logging.debug(f"Noticia puntuada: {text} con score {final_score} (base: {score*100}, tendencias: {trend_score})")
+        return final_score
+
     except Exception as e:
-        logging.error(f"Error calculando puntuación para '{entry['title'][:50]}': {e}", exc_info=True)
-        bot_status["errors"] += 1
-        save_bot_state_sync(cursor, conn)
-        return 0
+        logging.error(f"Error en score_news: {e}", exc_info=True)
+        return 0.0
 
 async def optimize_image(image_data: bytes) -> bytes | None:
     """
@@ -1665,131 +1748,161 @@ async def generate_weather_tweet(language: str, source_url: str) -> str:
         save_bot_state_sync(cursor, conn)
         return ""
 
-async def post_weather_map(session: aiohttp.ClientSession):
+import aiohttp
+import os
+import hashlib
+import logging
+import colorlog
+from datetime import datetime, timedelta
+from bs4 import BeautifulSoup
+from urllib.parse import urljoin
+
+async def post_weather_map(session):
+    """
+    Extrae un mapa o video del tiempo de España (lluvias, vientos, precipitaciones) desde páginas reales
+    y publica un tweet con un resumen real del pronóstico para el siguiente día.
+    
+    Args:
+        session (aiohttp.ClientSession): Sesión HTTP para realizar solicitudes.
+    """
     global bot_status
-    bot_status["last_task"] = "Publicando mapa del tiempo"
+    print_section_header("Publicando Pronóstico del Tiempo", color="magenta")
+    
     try:
-        current_time = time.time()
-        map_url = CONFIG["WEATHER"]["MAP_URL"]
-        source_url = CONFIG["WEATHER"]["SOURCE_URL"]
-        news_hash = hashlib.sha256(f"weather_map_{datetime.now().date()}".encode()).hexdigest()
+        # Configuración
+        main_url = CONFIG.get("WEATHER", {}).get("SCRAPE_URL", "https://www.aemet.es/es/eltiempo/prediccion/mapa_frentes")
+        fallback_url = CONFIG.get("WEATHER", {}).get("FALLBACK_SCRAPE_URL", "https://www.meteored.com/tiempo-en_Espana.html")
+        tomorrow = (datetime.now() + timedelta(days=1)).strftime("%d/%m/%Y")
+        
+        # Obtener resumen del pronóstico con OpenWeatherMap
+        forecast_text = await get_weather_forecast(session, tomorrow)
+        tweet_text = f"{forecast_text} #TiempoEspaña"
+        
+        logging.debug(f"📝 Preparando tweet: {tweet_text}")
+        print(f"\033[1;36m📅 Pronóstico para: {tomorrow}\033[0m")
+        print(f"\033[1;36m📝 Tweet: {tweet_text[:50]}...\033[0m")
 
-        # Descargar la imagen del mapa
-        image_data = await download_image(session, map_url)
-        if not image_data:
-            logging.error("No se pudo descargar el mapa del tiempo")
+        # Extraer imagen, video o GIF
+        media_data, media_type = await scrape_weather_media(session, main_url)
+        if not media_data:
+            logging.warning(f"⚠️ No se encontró medio en {main_url}. Intentando URL alternativa: {fallback_url}")
+            print(f"\033[1;33m⚠️ No se encontró medio en {main_url}\033[0m")
+            media_data, media_type = await scrape_weather_media(session, fallback_url)
+        
+        if not media_data:
+            logging.error(f"❌ No se pudo obtener medio del tiempo")
+            print(f"\033[1;31m❌ No se pudo obtener medio del tiempo\033[0m")
             bot_status["errors"] += 1
-            save_bot_state_sync(cursor, conn)
-            return False
+            return
 
-        # Verificar tamaño de la imagen
-        if len(image_data) > CONFIG["WEATHER"]["MAX_IMAGE_SIZE"]:
-            logging.error(f"Imagen del mapa demasiado grande: {len(image_data)} bytes")
+        # Guardar el medio
+        file_extension = {"image": "png", "video": "mp4", "gif": "gif"}.get(media_type, "png")
+        temp_media_path = os.path.join(CONFIG["PATHS"]["TEMP_IMAGE_DIR"], f"weather_{media_type}_{tomorrow.replace('/', '-')}.{file_extension}")
+        with open(temp_media_path, "wb") as f:
+            f.write(media_data)
+        logging.debug(f"💾 {media_type.capitalize()} guardado en {temp_media_path}")
+        print(f"\033[1;36m💾 {media_type.capitalize()} guardado: {temp_media_path}\033[0m")
+
+        # Publicar el tweet
+        success = await post_tweet(
+            session=session,
+            title=tweet_text,
+            summary=tweet_text,
+            url="",
+            image_data=media_data if media_type in ["image", "gif"] else None,  # Videos pueden requerir manejo especial
+            news_hash=hashlib.sha256(tweet_text.encode()).hexdigest(),
+            score=1.0,
+            source="weather_map",
+            language="es",
+            trends=["#TiempoEspaña", "#Pronostico"]
+        )
+
+        if success:
+            logging.info(f"✅ Pronóstico del tiempo publicado exitosamente")
+            print(f"\033[1;32m✅ Publicado: {tweet_text[:50]}...\033[0m")
+        else:
+            logging.error(f"❌ Error publicando el pronóstico del tiempo")
+            print(f"\033[1;31m❌ Error al publicar el pronóstico\033[0m")
             bot_status["errors"] += 1
-            save_bot_state_sync(cursor, conn)
-            return False
 
-        # Optimizar imagen
-        optimized_image = await optimize_image(image_data)
-        if not optimized_image:
-            logging.error("No se pudo optimizar el mapa del tiempo")
-            bot_status["errors"] += 1
-            save_bot_state_sync(cursor, conn)
-            return False
-
-        languages = ["en", "es"]
-        success_count = 0
-        for language in languages:
-            category = f"write_{language}"
-            client = twitter_client_en if language == "en" else twitter_client_es
-            api = twitter_api_en if language == "en" else twitter_api_es
-            semaphore = write_semaphore_en if language == "en" else write_semaphore_es
-            rate_limit_event = write_rate_limit_event_en if language == "en" else write_rate_limit_event_es
-
-            # Verificar límites y enfriamiento
-            if current_time < bot_status["twitter_wait_until"].get(category, 0):
-                logging.info(f"Twitter pausado para {language} hasta {datetime.fromtimestamp(bot_status['twitter_wait_until'][category]).strftime('%H:%M:%S')}")
-                continue
-
-            if bot_status["daily_tweets_total"] >= CONFIG["API_LIMITS"]["TWEETS_PER_DAY"]:
-                logging.info(f"Límite diario alcanzado: {bot_status['daily_tweets_total']}/{CONFIG['API_LIMITS']['TWEETS_PER_DAY']}")
-                continue
-
-            if bot_status["monthly_posts_en"] + bot_status["monthly_posts_es"] >= CONFIG["API_LIMITS"]["MONTHLY_POSTS_TOTAL"]:
-                logging.info(f"Límite mensual total alcanzado: {bot_status['monthly_posts_en'] + bot_status['monthly_posts_es']}/{CONFIG['API_LIMITS']['MONTHLY_POSTS_TOTAL']}")
-                continue
-
-            last_tweet_time = bot_status[f"last_tweet_time_{language}"]
-            if last_tweet_time and (current_time - last_tweet_time.timestamp()) < CONFIG["INTERVALS"]["TWEET_COOLDOWN_SECONDS"]:
-                logging.info(f"Espera requerida para {language}")
-                continue
-
-            # Verificar duplicados
-            cursor.execute("SELECT COUNT(*) FROM historial WHERE hash = ? AND language = ?", (news_hash, language))
-            if cursor.fetchone()[0] > 0:
-                logging.info(f"Mapa del tiempo ya publicado en {language} hoy")
-                continue
-
-            # Generar tweet
-            tweet = await generate_weather_tweet(language, source_url)
-
-            # Guardar imagen temporalmente
-            temp_image_path = os.path.join(CONFIG["PATHS"]["TEMP_IMAGE_DIR"], f"weather_map_{language}_{news_hash}.jpg")
-            async with aiofiles.open(temp_image_path, "wb") as f:
-                await f.write(optimized_image)
-
-            try:
-                # Subir imagen
-                media = await make_twitter_request(
-                    api.media_upload,
-                    temp_image_path,
-                    category=category,
-                    semaphore=semaphore,
-                    rate_limit_event=rate_limit_event
-                )
-
-                # Publicar tweet
-                tweet_response = await make_twitter_request(
-                    client.create_tweet,
-                    text=tweet,
-                    media_ids=[media.media_id],
-                    category=category,
-                    semaphore=semaphore,
-                    rate_limit_event=rate_limit_event
-                )
-
-                # Actualizar estado
-                bot_status["daily_tweets_total"] += 1
-                bot_status[f"monthly_posts_{language}"] += 1
-                bot_status[f"posted_tweets_{language}"] += 1
-                bot_status[f"last_tweet_time_{language}"] = datetime.now()
-
-                # Registrar en historial
-                cursor.execute('''INSERT OR IGNORE INTO historial (hash, title, url, tweet, relevance, source, date, engagement, summary, language)
-                                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
-                              (news_hash, f"Weather Map Spain {datetime.now().date()}", source_url, tweet, 50.0, "weather_service", datetime.now().isoformat(), 0, "Daily weather map for Spain", language))
-                conn.commit()
-                save_bot_state_sync(cursor, conn)
-
-                logging.info(f"Mapa del tiempo publicado en {language}: ID {tweet_response.data['id']}")
-                success_count += 1
-
-            except Exception as e:
-                logging.error(f"Error publicando mapa del tiempo en {language}: {e}", exc_info=True)
-                bot_status["errors"] += 1
-                save_bot_state_sync(cursor, conn)
-
-            finally:
-                if os.path.exists(temp_image_path):
-                    os.remove(temp_image_path)
-
-        return success_count > 0
-
-    except Exception as e:
-        logging.error(f"Error general publicando mapa del tiempo: {e}", exc_info=True)
+    except aiohttp.ClientError as e:
+        logging.error(f"❌ Error de red: {e}", exc_info=True)
+        print(f"\033[1;31m❌ Error de red: {e}\033[0m")
         bot_status["errors"] += 1
-        save_bot_state_sync(cursor, conn)
-        return False
+    except Exception as e:
+        logging.error(f"❌ Error inesperado en post_weather_map: {e}", exc_info=True)
+        print(f"\033[1;31m❌ Error inesperado: {e}\033[0m")
+        bot_status["errors"] += 1
+    finally:
+        print(f"\033[1;34m{'─' * 60}\033[0m\n")
+
+async def get_weather_forecast(session, date):
+    """Obtiene un resumen del pronóstico para el día especificado usando OpenWeatherMap."""
+    try:
+        api_key = CONFIG["WEATHER"].get("OPENWEATHER_API_KEY")
+        if not api_key:
+            logging.warning("⚠️ Clave de OpenWeatherMap no configurada. Usando texto genérico.")
+            return CONFIG["WEATHER"].get("FORECAST_TEMPLATE", "Pronóstico para {date}: 🌧️ Lluvias moderadas.").format(date=date)
+        
+        url = f"http://api.openweathermap.org/data/2.5/forecast?q=Madrid,ES&appid={api_key}&units=metric"
+        async with session.get(url) as response:
+            if response.status != 200:
+                logging.error(f"❌ Error en API OpenWeatherMap: Código {response.status}")
+                return CONFIG["WEATHER"]["FORECAST_TEMPLATE"].format(date=date)
+            
+            data = await response.json()
+            tomorrow = (datetime.now() + timedelta(days=1)).strftime("%Y-%m-%d")
+            forecast = next((item for item in data["list"] if tomorrow in item["dt_txt"]), None)
+            if forecast:
+                rain = forecast.get("rain", {}).get("3h", 0)
+                wind = forecast["wind"]["speed"]
+                temp = forecast["main"]["temp"]
+                return f"Pronóstico para {date}: 🌧️ Lluvias: {rain}mm, 💨 Viento: {wind}m/s, 🌡️ Temp: {temp}°C."
+            return CONFIG["WEATHER"]["FORECAST_TEMPLATE"].format(date=date)
+    except Exception as e:
+        logging.error(f"❌ Error obteniendo pronóstico: {e}", exc_info=True)
+        return CONFIG["WEATHER"]["FORECAST_TEMPLATE"].format(date=date)
+
+async def scrape_weather_media(session, url):
+    """Extrae una imagen, video o GIF de una página de pronóstico del tiempo."""
+    try:
+        async with session.get(url, timeout=10) as response:
+            if response.status != 200:
+                logging.warning(f"⚠️ Error accediendo a {url}: Código {response.status}")
+                return None, None
+            
+            html = await response.text()
+            soup = BeautifulSoup(html, "html.parser")
+            
+            # Buscar imágenes (prioridad para mapas de precipitaciones o vientos)
+            img_tags = soup.find_all("img", src=lambda src: src and ("precipitacion" in src.lower() or "viento" in src.lower() or "lluvia" in src.lower()))
+            if img_tags:
+                img_url = urljoin(url, img_tags[0]["src"])
+                async with session.get(img_url, timeout=10) as img_response:
+                    if img_response.status == 200:
+                        return await img_response.read(), "image"
+            
+            # Buscar GIFs
+            gif_tags = soup.find_all("img", src=lambda src: src and src.lower().endswith(".gif"))
+            if gif_tags:
+                gif_url = urljoin(gif_tags[0]["src"], url)
+                async with session.get(gif_url, timeout=10) as gif_response:
+                    if gif_response.status == 200:
+                        return await gif_response.read(), "gif"
+            
+            # Buscar videos (menos probable, pero soportado)
+            video_tags = soup.find_all("video", src=lambda src: src and ("mp4" in src.lower() or "webm" in src.lower()))
+            if video_tags and video_tags[0]["src"]:
+                video_url = urljoin(url, video_tags[0]["src"])
+                async with session.get(video_url, timeout=10) as video_response:
+                    if video_response.status == 200:
+                        return await video_response.read(), "video"
+            
+            logging.warning(f"⚠️ No se encontraron medios relevantes en {url}")
+            return None, None
+    except Exception as e:
+        logging.error(f"❌ Error scrapeando {url}: {e}", exc_info=True)
+        return None, None
 
 async def repost_tweet_from_url(tweet_url: str, summary: str, language: str = 'en') -> bool:
     global bot_status
@@ -2052,33 +2165,24 @@ async def post_tweet(session: aiohttp.ClientSession, title: str, summary: str, u
         # await asyncio.sleep(2) # Small pause after attempting to post (optional, make_twitter_request might already wait)
 
 async def process_queue():
-    """
-    Processes items in the publication queue that couldn't be published immediately
-    due to X API limits.
-    Verifies if they have already been published before attempting to post from the queue.
-    Its execution frequency is controlled by CONFIG["INTERVALS"]["QUEUE_PROCESSING_MINUTES"].
-    Benefits from dynamic limit handling in post_tweet and make_twitter_request.
-    Improved logic for checking publication status and removing from queue.
-    """
     global bot_status
     bot_status["last_task"] = "Processing publication queue"
+    print_section_header("Procesando Cola de Publicación")
     logging.debug("Starting publication queue processing...")
 
     try:
-        # Select items from the queue ordered by age
-        # Use run_db_sync to execute fetchall in a thread
-        # Ensure run_db_sync and cursor are defined
         cursor.execute("SELECT id, title, summary, url, image_data, news_hash, score, source, language, trends FROM cola_publicacion ORDER BY added_at ASC")
         pending_news = await run_db_sync(cursor.fetchall)
 
         if not pending_news:
+            print("ℹ️ La cola de publicación está vacía.")
             logging.debug("Publication queue is empty.")
             return
 
         logging.info(f"Items in publication queue: {len(pending_news)}")
 
         async with aiohttp.ClientSession() as session:
-            items_to_remove = [] # List to collect IDs of items to remove after processing
+            items_to_remove = []
 
             for news in pending_news:
                 id, title, summary, url, image_data_bytes, news_hash, score, source, language, trends_json = news
@@ -2086,77 +2190,46 @@ async def process_queue():
                 category = f"write_{language}"
                 current_time_ts = time.time()
 
-                # Check if writing for this language is paused
-                # This check respects pauses imposed by check_api_rate_limit
                 if current_time_ts < bot_status["twitter_wait_until"].get(category, 0):
-                    logging.debug(f"X writing paused for {language}. Skipping queue item (ID: {id}).")
-                    continue # Skip this item for now, try the next one
+                    logging.debug(f"Escritura pausada para {language}. Omitiendo elemento de la cola (ID: {id}).")
+                    continue
 
-                # Check daily and total monthly limits before attempting to post
-                # Using CONFIG["API_LIMITS"] values
                 if bot_status["daily_tweets_total"] >= CONFIG["API_LIMITS"]["TWEETS_PER_DAY"]:
-                     logging.debug(f"Daily total tweet limit reached. Stopping queue processing.")
-                     break # Stop processing queue if daily limits are exhausted
+                    logging.debug("Límite diario de tweets alcanzado. Deteniendo procesamiento de la cola.")
+                    break
 
                 if bot_status["monthly_posts_en"] + bot_status["monthly_posts_es"] >= CONFIG["API_LIMITS"]["MONTHLY_POSTS_TOTAL"]:
-                     logging.debug(f"Monthly total post limit reached. Stopping queue processing.")
-                     break # Stop processing queue if monthly limits are exhausted
+                    logging.debug("Límite mensual total de publicaciones alcanzado. Deteniendo procesamiento de la cola.")
+                    break
 
-                # Check tweet cooldown for this language
-                # Using CONFIG["INTERVALS"]["TWEET_COOLDOWN_SECONDS"]
                 last_tweet_time = bot_status.get(f"last_tweet_time_{language}")
                 if last_tweet_time and (current_time_ts - last_tweet_time.timestamp()) < CONFIG["INTERVALS"]["TWEET_COOLDOWN_SECONDS"]:
                     remaining = CONFIG["INTERVALS"]["TWEET_COOLDOWN_SECONDS"] - (current_time_ts - last_tweet_time.timestamp())
-                    logging.debug(f"Cooldown required for {language} before posting from queue: {remaining:.1f}s remaining.")
-                    # Skip this item for now, try the next one.
-                    # The actual wait before the request is managed by post_tweet/make_twitter_request
+                    logging.debug(f"Enfriamiento requerido para {language}: {remaining:.1f}s restantes.")
                     continue
 
-                # *** VERIFY IF IT HAS ALREADY BEEN PUBLISHED IN THIS LANGUAGE BEFORE POSTING FROM THE QUEUE ***
-                # Use the async function is_published_in_language
                 if await is_published_in_language(title, summary, url, source, language):
-                    logging.info(f"Queue item already published ({language}): {title[:50]}. Marking for removal from queue (ID: {id}).")
-                    items_to_remove.append(id) # Add to list for removal
-                    continue # Move to the next queue item
+                    logging.info(f"Elemento de la cola ya publicado ({language}): {title[:50]}. Marcando para eliminar (ID: {id}).")
+                    items_to_remove.append(id)
+                    continue
 
-                logging.info(f"Attempting to post queue item (ID: {id}) in {language}: {title[:50]}...")
+                logging.info(f"Intentando publicar elemento de la cola (ID: {id}) en {language}: {title[:50]}...")
 
                 try:
-                    # Attempt to post the tweet (post_tweet handles image and counters)
-                    # post_tweet already manages limits and waits internally using make_twitter_request.
-                    # Pass image_data_bytes which can be None
                     success = await post_tweet(session, title, summary, url, image_data_bytes, news_hash, score, source, language, trends)
-
                     if success:
-                        logging.info(f"Queue item (ID: {id}) successfully posted in {language}. Marking for removal.")
-                        items_to_remove.append(id) # Mark for removal
-                        # The news is added to history inside post_tweet
-                        # Wait a bit after a successful post from the queue
-                        # This helps space out successive posts from the queue.
-                        await asyncio.sleep(CONFIG["INTERVALS"]["API_REQUEST_DELAY_SECONDS"]) # Using the CONFIG value
+                        logging.info(f"Elemento de la cola (ID: {id}) publicado exitosamente en {language}. Marcando para eliminar.")
+                        items_to_remove.append(id)
+                        await asyncio.sleep(CONFIG["INTERVALS"]["API_REQUEST_DELAY_SECONDS"])
                     else:
-                        # If post_tweet fails, it logs the error and potentially re-queues if recoverable.
-                        # If it wasn't re-queued (e.g., non-recoverable error, or already published),
-                        # it will remain in the queue for the next cycle unless we remove it here.
-                        # Let's assume post_tweet's internal re-queue logic is sufficient for recoverable errors.
-                        # Items that fail for non-recoverable reasons or are already published should be removed.
-                        # The `is_published_in_language` check above handles the "already published" case.
-                        # For non-recoverable errors, they will stay in the queue unless manually removed.
-                        # For now, let them stay unless explicitly successful or marked as published.
-                        logging.warning(f"Could not post queue item (ID: {id}) in {language}. Remains in queue for reattempt.")
-
-
+                        logging.warning(f"No se pudo publicar el elemento de la cola (ID: {id}) en {language}. Permanece en la cola.")
                 except Exception as e:
-                    logging.error(f"Error attempting to post queue item (ID: {id}) in {language}: {e}", exc_info=True)
+                    logging.error(f"Error intentando publicar elemento de la cola (ID: {id}) en {language}: {e}", exc_info=True)
                     bot_status["errors"] += 1
-                    await save_bot_state() # Save state if there's an error
-                    # The item remains in the queue for future reattempts if the error is not critical.
+                    await save_bot_state()
 
-            # --- Remove successfully processed items from the queue ---
             if items_to_remove:
-                logging.info(f"Removing {len(items_to_remove)} items from the publication queue.")
-                # Execute DELETE and COMMIT in a separate thread using the helper
-                # Use a single transaction for multiple deletions for efficiency
+                logging.info(f"Eliminando {len(items_to_remove)} elementos de la cola de publicación.")
                 try:
                     await run_db_sync(
                         cursor.execute,
@@ -2164,17 +2237,16 @@ async def process_queue():
                         tuple(items_to_remove)
                     )
                     await run_db_sync(conn.commit)
-                    await save_bot_state() # Save state after removing items
+                    await save_bot_state()
                 except Exception as e:
-                    logging.error(f"Error removing items from queue: {e}", exc_info=True)
+                    logging.error(f"Error eliminando elementos de la cola: {e}", exc_info=True)
                     bot_status["errors"] += 1
                     await save_bot_state()
 
-
     except Exception as e:
-        logging.error(f"General error processing publication queue: {e}", exc_info=True)
+        logging.error(f"Error general procesando la cola de publicación: {e}", exc_info=True)
         bot_status["errors"] += 1
-        await save_bot_state() # Save state if there's a general error
+        await save_bot_state()
 
 async def get_image_from_search(session: aiohttp.ClientSession, query: str) -> bytes | None:
     """
@@ -2557,7 +2629,7 @@ async def process_discord_news(channel_id: int, trends: list[str]) -> list[dict]
 async def process_news():
     global bot_status
     bot_status["tasks_running"] += 1
-    bot_status["last_task"] = "Procesando noticias"
+    print_section_header("Procesando Noticias")
     logging.info("Iniciando ciclo de procesamiento de noticias...")
 
     try:
@@ -2587,6 +2659,7 @@ async def process_news():
         all_news = []
 
         async with aiohttp.ClientSession() as session:
+            print_section_header("Procesando Fuentes")
             # Procesar Discord
             async with discord_processing_lock:
                 for channel_id in [DISCORD_CHANNEL_1, DISCORD_CHANNEL_2]:
@@ -2607,6 +2680,7 @@ async def process_news():
                 logging.info("Lecturas de Twitter/X pausadas o límite agotado. Usando solo RSS y Discord.")
 
             if not all_news:
+                print("ℹ️ No hay noticias nuevas para procesar en este ciclo.")
                 logging.info("No hay noticias nuevas para procesar en este ciclo.")
                 return
 
@@ -2628,6 +2702,7 @@ async def process_news():
             for entry, score in scored_items:
                 if await process_single_news(session, entry, entry["hash"], trends):
                     processed_count += 1
+                    print(f"✅ Noticia procesada: {entry['title'][:50]} (Puntuación: {score:.1f})")
                     await asyncio.sleep(CONFIG["INTERVALS"]["API_REQUEST_DELAY_SECONDS"])
 
             bot_status["recent_processed_news"] = processed_count
@@ -2635,7 +2710,7 @@ async def process_news():
             save_bot_state_sync(cursor, conn)
 
     except Exception as e:
-        logging.error(f"Error en process_news: {e}", exc_info=True)
+        logging.error(f"❌ Error en process_news: {e}", exc_info=True)
         bot_status["errors"] += 1
         save_bot_state_sync(cursor, conn)
     finally:
@@ -2652,35 +2727,78 @@ async def discord_news_processor():
             bot_status["errors"] += 1
             save_bot_state_sync(cursor, conn)
             await asyncio.sleep(5)
+            
 
 async def heartbeat():
     while True:
         try:
-            uptime_hours = (datetime.now() - bot_status["uptime"]).total_seconds() / 3600
-            read_wait = bot_status["twitter_wait_until"].get("read", 0)
-            write_en_wait = bot_status["twitter_wait_until"].get("write_en", 0)
-            write_es_wait = bot_status["twitter_wait_until"].get("write_es", 0)
-            read_str = f"Read Wait: {datetime.fromtimestamp(read_wait).strftime('%H:%M:%S')}" if time.time() < read_wait else "Read Wait: None"
-            write_en_str = f"Write EN Wait: {datetime.fromtimestamp(write_en_wait).strftime('%H:%M:%S')}" if time.time() < write_en_wait else "Write EN Wait: None"
-            write_es_str = f"Write ES Wait: {datetime.fromtimestamp(write_es_wait).strftime('%H:%M:%S')}" if time.time() < write_es_wait else "Write ES Wait: None"
-            status_msg = (
-                f"🤖 Bot activo: TwEN{'✅' if bot_status['twitter_connected_en'] else '❌'} "
-                f"TwES{'✅' if bot_status['twitter_connected_es'] else '❌'} "
-                f"SQL{'✅' if bot_status['sqlite_connected'] else '❌'} "
-                f"Dis{'✅' if bot_status['discord_connected'] else '❌'} "
-                f"Tweets EN:{bot_status['posted_tweets_en']} Tweets ES:{bot_status['posted_tweets_es']} "
-                f"Total Diario:{bot_status['daily_tweets_total']}/{CONFIG['API_LIMITS']['TWEETS_PER_DAY']} "
-                f"X Reads:{bot_status['x_api_reads_remaining']}/{CONFIG['API_LIMITS']['MONTHLY_READS']} "
-                f"API Reqs:{bot_status['api_request_count']}/{CONFIG['API_LIMITS']['REQUESTS_PER_WINDOW']} "
-                f"Recent News:{bot_status['recent_processed_news']} "
-                f"Errores:{bot_status['errors']} ⏳{uptime_hours:.1f}h "
-                f"{read_str} {write_en_str} {write_es_str}"
+            # Calcular tiempo de actividad
+            uptime = datetime.now() - bot_status["uptime"]
+            uptime_str = f"{int(uptime.total_seconds() // 86400)}d {int((uptime.total_seconds() % 86400) // 3600)}h {int((uptime.total_seconds() % 3600) // 60)}m"
+
+            # Imprimir encabezado
+            print_section_header("Estado del Sistema", color="cyan")  # Cambié a cian para un look más vibrante
+
+            # Información general
+            print(f"\033[1;36m🛠️  Sistema Activo: \033[0m{uptime_str}")
+            print(f"\033[1;36m🔄 Tarea Actual: \033[0m{bot_status.get('last_task', 'N/A')}")
+
+            # Estado de conexiones
+            print(f"\033[1;36m🔗 Conexiones:\033[0m")
+            connections = [
+                ("Twitter EN", bot_status["twitter_connected_en"]),
+                ("Twitter ES", bot_status["twitter_connected_es"]),
+                ("SQLite", bot_status["sqlite_connected"]),
+                ("Discord", bot_status["discord_connected"])
+            ]
+            for name, status in connections:
+                status_icon = "\033[32m✅\033[0m" if status else "\033[31m❌\033[0m"
+                print(f"  {name:<12}: {status_icon}")
+
+            # Estadísticas de tweets
+            print(f"\033[1;36m📢 Tweets Publicados:\033[0m")
+            print(f"  EN: {bot_status['posted_tweets_en']:<4} | ES: {bot_status['posted_tweets_es']}")
+            print_progress_bar(
+                bot_status["daily_tweets_total"],
+                CONFIG["API_LIMITS"]["TWEETS_PER_DAY"],
+                "Uso Diario",
+                critical_threshold=80
             )
-            logging.info(status_msg)
-            bot_status["recent_processed_news"] = 0
+
+            # Uso de API
+            print(f"\033[1;36m📊 API X:\033[0m")
+            api_reads_percent = (bot_status["x_api_reads_remaining"] / CONFIG["API_LIMITS"]["MONTHLY_READS"]) * 100
+            print_progress_bar(
+                bot_status["x_api_reads_remaining"],
+                CONFIG["API_LIMITS"]["MONTHLY_READS"],
+                "Lecturas Restantes",
+                critical_threshold=20
+            )
+
+            # Errores
+            error_color = "31" if bot_status["errors"] > 0 else "32"  # Rojo si hay errores, verde si no
+            print(f"\033[1;36m⚠️  Errores: \033[{error_color}m{bot_status['errors']}\033[0m")
+
+            # Tiempos de espera
+            print(f"\033[1;36m⏳ Restricciones:\033[0m")
+            current_time = time.time()
+            any_restrictions = False
+            for key, wait_until in bot_status["twitter_wait_until"].items():
+                if current_time < wait_until:
+                    wait_time = wait_until - current_time
+                    mode = {"read": "Lectura", "write_en": "Escritura EN", "write_es": "Escritura ES"}.get(key, key)
+                    print(f"  {mode:<12}: Pausada por {wait_time:.0f}s")
+                    any_restrictions = True
+            if not any_restrictions:
+                print("  Ninguna activa")
+
+            # Separador final
+            print(f"\033[1;34m{'─' * 60}\033[0m\n")
+
+            # Esperar hasta el próximo heartbeat
             await asyncio.sleep(CONFIG["INTERVALS"]["HEARTBEAT_SECONDS"])
         except Exception as e:
-            logging.error(f"Error en heartbeat: {e}", exc_info=True)
+            logging.error(f"\033[31m❌ Error en heartbeat: {e}\033[0m", exc_info=True)
             bot_status["errors"] += 1
             save_bot_state_sync(cursor, conn)
             await asyncio.sleep(5)
@@ -2696,6 +2814,7 @@ async def run_discord():
 
 async def main():
     global bot_status
+    print_section_header("Iniciando Bot")
     logging.info("Iniciando bot...")
     bot_status["last_task"] = "Iniciando bot"
     
