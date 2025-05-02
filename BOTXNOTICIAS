@@ -85,7 +85,7 @@ CONFIG = {
         "MAX_LENGTH": 280,
     },
     "WEATHER": {
-        "POST_HOUR": 22,  # Hora de publicación (22:00)
+        "POST_HOUR": 23,  # Hora de publicación (22:00)
         "MAP_URL": "https://www.eltiempo.es/lluvia",
         "SOURCE_URL": "https://www.eltiempo.es",
         "MAX_IMAGE_SIZE": 5 * 1024 * 1024,
@@ -1757,24 +1757,49 @@ from datetime import datetime, timedelta
 from bs4 import BeautifulSoup
 from urllib.parse import urljoin
 
-async def post_weather_map(session):
+from selenium import webdriver
+from selenium.webdriver.chrome.options import Options
+import time
+
+def capture_map_screenshot(url, output_path):
     """
-    Extrae un mapa o video del tiempo de España (lluvias, vientos, precipitaciones) desde páginas reales
-    y publica un tweet con un resumen real del pronóstico para el siguiente día.
+    Captura una imagen del mapa meteorológico desde la URL dada usando Selenium.
     
     Args:
-        session (aiohttp.ClientSession): Sesión HTTP para realizar solicitudes.
+        url (str): URL de la página con el mapa (ej. "https://www.eltiempo.es/lluvia").
+        output_path (str): Ruta donde guardar la captura (formato PNG).
     """
+    options = Options()
+    options.headless = True  # Ejecutar Chrome sin interfaz gráfica
+    driver = webdriver.Chrome(options=options)
+    
+    # Ajustar el tamaño de la ventana para capturar el mapa completo
+    driver.set_window_size(1200, 800)
+    
+    # Abrir la URL
+    driver.get(url)
+    
+    # Esperar a que el mapa se cargue completamente
+    time.sleep(5)
+    
+    # Guardar la captura de pantalla
+    driver.save_screenshot(output_path)
+    
+    # Cerrar el navegador
+    driver.quit()
+    
+    logging.info(f"✅ Captura guardada en {output_path}")
+
+async def post_weather_map(session):
     global bot_status
     print_section_header("Publicando Pronóstico del Tiempo", color="magenta")
     
     try:
         # Configuración
-        main_url = CONFIG.get("WEATHER", {}).get("SCRAPE_URL", "https://www.aemet.es/es/eltiempo/prediccion/mapa_frentes")
-        fallback_url = CONFIG.get("WEATHER", {}).get("FALLBACK_SCRAPE_URL", "https://www.meteored.com/tiempo-en_Espana.html")
+        map_url = CONFIG["WEATHER"]["MAP_URL"]  # "https://www.eltiempo.es/lluvia"
         tomorrow = (datetime.now() + timedelta(days=1)).strftime("%d/%m/%Y")
         
-        # Obtener resumen del pronóstico con OpenWeatherMap
+        # Obtener resumen del pronóstico
         forecast_text = await get_weather_forecast(session, tomorrow)
         tweet_text = f"{forecast_text} #TiempoEspaña"
         
@@ -1782,26 +1807,23 @@ async def post_weather_map(session):
         print(f"\033[1;36m📅 Pronóstico para: {tomorrow}\033[0m")
         print(f"\033[1;36m📝 Tweet: {tweet_text[:50]}...\033[0m")
 
-        # Extraer imagen, video o GIF
-        media_data, media_type = await scrape_weather_media(session, main_url)
-        if not media_data:
-            logging.warning(f"⚠️ No se encontró medio en {main_url}. Intentando URL alternativa: {fallback_url}")
-            print(f"\033[1;33m⚠️ No se encontró medio en {main_url}\033[0m")
-            media_data, media_type = await scrape_weather_media(session, fallback_url)
+        # Capturar imagen del mapa con Selenium
+        loop = asyncio.get_event_loop()
+        output_path = os.path.join(CONFIG["PATHS"]["TEMP_IMAGE_DIR"], f"weather_map_{tomorrow.replace('/', '-')}.png")
+        await loop.run_in_executor(None, capture_map_screenshot, map_url, output_path)
         
-        if not media_data:
-            logging.error(f"❌ No se pudo obtener medio del tiempo")
-            print(f"\033[1;31m❌ No se pudo obtener medio del tiempo\033[0m")
-            bot_status["errors"] += 1
-            return
+        # Leer la imagen capturada
+        async with aiofiles.open(output_path, "rb") as f:
+            media_data = await f.read()
+        media_type = "image"
 
-        # Guardar el medio
-        file_extension = {"image": "png", "video": "mp4", "gif": "gif"}.get(media_type, "png")
-        temp_media_path = os.path.join(CONFIG["PATHS"]["TEMP_IMAGE_DIR"], f"weather_{media_type}_{tomorrow.replace('/', '-')}.{file_extension}")
-        with open(temp_media_path, "wb") as f:
-            f.write(media_data)
-        logging.debug(f"💾 {media_type.capitalize()} guardado en {temp_media_path}")
-        print(f"\033[1;36m💾 {media_type.capitalize()} guardado: {temp_media_path}\033[0m")
+        # Optimizar la imagen si es necesario
+        optimized_data = await optimize_image(media_data)
+        if optimized_data:
+            media_data = optimized_data
+            logging.debug("Imagen optimizada exitosamente")
+        else:
+            logging.warning("No se pudo optimizar la imagen, usando original")
 
         # Publicar el tweet
         success = await post_tweet(
@@ -1809,7 +1831,7 @@ async def post_weather_map(session):
             title=tweet_text,
             summary=tweet_text,
             url="",
-            image_data=media_data if media_type in ["image", "gif"] else None,  # Videos pueden requerir manejo especial
+            image_data=media_data,
             news_hash=hashlib.sha256(tweet_text.encode()).hexdigest(),
             score=1.0,
             source="weather_map",
@@ -1825,15 +1847,14 @@ async def post_weather_map(session):
             print(f"\033[1;31m❌ Error al publicar el pronóstico\033[0m")
             bot_status["errors"] += 1
 
-    except aiohttp.ClientError as e:
-        logging.error(f"❌ Error de red: {e}", exc_info=True)
-        print(f"\033[1;31m❌ Error de red: {e}\033[0m")
-        bot_status["errors"] += 1
     except Exception as e:
-        logging.error(f"❌ Error inesperado en post_weather_map: {e}", exc_info=True)
-        print(f"\033[1;31m❌ Error inesperado: {e}\033[0m")
+        logging.error(f"❌ Error en post_weather_map: {e}", exc_info=True)
+        print(f"\033[1;31m❌ Error: {e}\033[0m")
         bot_status["errors"] += 1
     finally:
+        # Limpiar archivo temporal
+        if os.path.exists(output_path):
+            await asyncio.to_thread(os.remove, output_path)
         print(f"\033[1;34m{'─' * 60}\033[0m\n")
 
 async def get_weather_forecast(session, date):
@@ -1864,44 +1885,23 @@ async def get_weather_forecast(session, date):
         return CONFIG["WEATHER"]["FORECAST_TEMPLATE"].format(date=date)
 
 async def scrape_weather_media(session, url):
-    """Extrae una imagen, video o GIF de una página de pronóstico del tiempo."""
+    """Busca y descarga un GIF real desde la página."""
     try:
         async with session.get(url, timeout=10) as response:
             if response.status != 200:
-                logging.warning(f"⚠️ Error accediendo a {url}: Código {response.status}")
                 return None, None
-            
             html = await response.text()
             soup = BeautifulSoup(html, "html.parser")
-            
-            # Buscar imágenes (prioridad para mapas de precipitaciones o vientos)
-            img_tags = soup.find_all("img", src=lambda src: src and ("precipitacion" in src.lower() or "viento" in src.lower() or "lluvia" in src.lower()))
-            if img_tags:
-                img_url = urljoin(url, img_tags[0]["src"])
-                async with session.get(img_url, timeout=10) as img_response:
-                    if img_response.status == 200:
-                        return await img_response.read(), "image"
-            
-            # Buscar GIFs
-            gif_tags = soup.find_all("img", src=lambda src: src and src.lower().endswith(".gif"))
-            if gif_tags:
-                gif_url = urljoin(gif_tags[0]["src"], url)
+            # Busca un elemento con el GIF (ajusta según la estructura de la página)
+            gif_tag = soup.find("img", src=lambda src: src and src.lower().endswith(".gif"))
+            if gif_tag:
+                gif_url = urljoin(url, gif_tag["src"])
                 async with session.get(gif_url, timeout=10) as gif_response:
-                    if gif_response.status == 200:
+                    if gif_response.status == 200 and gif_response.headers.get("Content-Type", "").startswith("image/gif"):
                         return await gif_response.read(), "gif"
-            
-            # Buscar videos (menos probable, pero soportado)
-            video_tags = soup.find_all("video", src=lambda src: src and ("mp4" in src.lower() or "webm" in src.lower()))
-            if video_tags and video_tags[0]["src"]:
-                video_url = urljoin(url, video_tags[0]["src"])
-                async with session.get(video_url, timeout=10) as video_response:
-                    if video_response.status == 200:
-                        return await video_response.read(), "video"
-            
-            logging.warning(f"⚠️ No se encontraron medios relevantes en {url}")
             return None, None
     except Exception as e:
-        logging.error(f"❌ Error scrapeando {url}: {e}", exc_info=True)
+        print(f"Error al scrapear {url}: {e}")
         return None, None
 
 async def repost_tweet_from_url(tweet_url: str, summary: str, language: str = 'en') -> bool:
