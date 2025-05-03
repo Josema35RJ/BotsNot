@@ -1,10 +1,13 @@
 import collections
 from email.utils import parsedate_to_datetime
 import logging
+import random
 from typing import Dict, Optional
 import colorlog
 from cachetools import TTLCache
 from logging import handlers
+from flask import app
+from httpcore import TimeoutException
 from transformers import DistilBertTokenizer, DistilBertForSequenceClassification
 from functools import partial
 import feedparser
@@ -28,7 +31,7 @@ import aiofiles
 import discord
 from discord.ext import commands
 import re
-from collections import deque, defaultdict
+from collections import Counter, deque, defaultdict
 import aiohttp
 import time
 import sys
@@ -85,10 +88,61 @@ CONFIG = {
         "MAX_LENGTH": 280,
     },
     "WEATHER": {
-        "POST_HOUR": 23,  # Hora de publicación (22:00)
-        "MAP_URL": "https://www.eltiempo.es/lluvia",
-        "SOURCE_URL": "https://www.eltiempo.es",
-        "MAX_IMAGE_SIZE": 5 * 1024 * 1024,
+        "AEMET_TEXT_URL": "https://www.aemet.es/es/eltiempo/prediccion/espana",
+        "AEMET_CITY_URL": "https://www.aemet.es/es/eltiempo/prediccion/municipios",
+        "OUTPUT_PATH": "weather_map_fun.png",
+        "WEBSITE_URL": "https://www.aemet.es",
+        "BASE_MAP_URL": "https://freevectormaps.com/images/maps/spain-political-map.png"
+    },
+    "CITIES": [
+        {"name": "Madrid", "coords": (600, 400), "temp": None, "icon": None, "aemet_id": "madrid-id28079", "region": "centro"},
+        {"name": "Barcelona", "coords": (800, 300), "temp": None, "icon": None, "aemet_id": "barcelona-id08019", "region": "este"},
+        {"name": "Sevilla", "coords": (500, 550), "temp": None, "icon": None, "aemet_id": "sevilla-id41091", "region": "sur"},
+        {"name": "Valencia", "coords": (750, 400), "temp": None, "icon": None, "aemet_id": "valencia-id46250", "region": "este"},
+        {"name": "Bilbao", "coords": (600, 200), "temp": None, "icon": None, "aemet_id": "bilbao-bilbo-id48020", "region": "norte"},
+        {"name": "A Coruña", "coords": (400, 150), "temp": None, "icon": None, "aemet_id": "a-coruna-id15030", "region": "noroeste"},
+        {"name": "Málaga", "coords": (600, 600), "temp": None, "icon": None, "aemet_id": "malaga-id29067", "region": "sur"},
+        {"name": "Palma", "coords": (900, 400), "temp": None, "icon": None, "aemet_id": "palma-id07040", "region": "islas"},
+        {"name": "Las Palmas", "coords": (200, 700), "temp": None, "icon": None, "aemet_id": "las-palmas-de-gran-canaria-id35016", "region": "islas"}
+    ],
+    "FUN_EMOJIS": {
+        "despejado": "☀️",
+        "nubes": "☁️",
+        "lluvia": "🌧️",
+        "truenos": "⛈️",
+        "nieve": "❄️",
+        "niebla": "🌫️"
+    },
+    "EXTRA_EMOJIS": {
+        "despejado": "🌺",
+        "nubes": "🌸",
+        "lluvia": "💦",
+        "truenos": "⚡",
+        "nieve": "☃️",
+        "niebla": "🌙"
+    },
+    "FUN_MESSAGES": {
+        "despejado": ["¡Sol a tope! 🏖️", "¡Brilla! 🌟"],
+        "nubes": ["¡Nubes de paseo! 🚶", "¡Cielo tímido! 💤"],
+        "lluvia": ["¡Llueve risas! 😂", "¡A bailar! 💃"],
+        "truenos": ["¡Truenos rock! 🎸", "¡Cielo enfadado! 😱"],
+        "nieve": ["¡Nieve mágica! 🪄", "¡Frío épico! ☃️"],
+        "niebla": ["¡Escondite! 🙈", "¡Misterio! 🕵️"]
+    },
+    "TEXT_COLORS": {
+        "despejado": (255, 215, 0, 255),
+        "nubes": (135, 206, 235, 255),
+        "lluvia": (0, 191, 255, 255),
+        "truenos": (255, 69, 0, 255),
+        "nieve": (173, 216, 230, 255),
+        "niebla": (169, 169, 169, 255)
+    },
+    "ELECTRICITY_MAPS": {
+        "CARBON_INTENSITY_URL": "https://api.electricitymap.org/v3/carbon-intensity/latest",
+        "POWER_BREAKDOWN_URL": "https://api.electricitymap.org/v3/power-breakdown/latest",
+        "AUTH_TOKEN": "02wv9IMX1j6eGUciuKqw",
+        "ZONE": "ES",  # Zona para España
+        "WEBSITE_URL": "https://app.electricitymaps.com"
     }
 }
 
@@ -1693,60 +1747,158 @@ def get_summary_sentences(summary: str, max_chars: int) -> str:
         current_length += sentence_length
     return " ".join(selected_sentences).strip()
 
-
 async def generate_detailed_tweet(title: str, summary: str, url: str, trends: list[str], language: str) -> str:
-    is_gaming = any(kw in title.lower() for kw in ["game", "nintendo", "playstation", "xbox"])
-    emojis = "🎮" if is_gaming else "💻"
+    """
+    Genera un tweet de máxima calidad usando análisis semántico avanzado, ganchos ultra atractivos,
+    contenido optimizado y hashtags hiper relevantes, inspirado en @IGN y @GameSpot, sin costo alguno.
+    """
+    short_url = await shorten_url(url)
+    max_content_length = CONFIG["TWEET"]["MAX_LENGTH"] - len(short_url) - 30  # Reservar espacio para gancho, hashtags, emojis
 
-    if language == 'es':
-        title_text = await translate_to_spanish(title)
-        summary_text = await translate_to_spanish(clean_text(summary))
-    else:
-        title_text = title
-        summary_text = clean_text(summary)
+    # Análisis semántico: clasificar tipo de noticia, tono y extraer entidades
+    title_lower = title.lower()
+    summary_lower = summary.lower()
+    news_type = "default"
+    emoji = "🎮"
+    tone = "enthusiastic"
+    for pattern, n_type, n_emoji, n_tone in [
+        ("release|launch|available|out now", "release", "🎮", "enthusiastic"),
+        ("update|patch|fix|improvement", "update", "🔧", "informative"),
+        ("announcement|reveal|trailer|teaser", "announce", "🚨", "urgent"),
+        ("free|deal|sale|discount|offer", "deal", "💸", "promotional"),
+        ("break|urgent|alert|emergency", "urgent", "🔥", "urgent")
+    ]:
+        if any(keyword in title_lower or keyword in summary_lower for keyword in pattern.split("|")):
+            news_type = n_type
+            emoji = n_emoji
+            tone = n_tone
+            break
 
-    # Hashtags basados en palabras clave
-    keywords = re.findall(r'\b\w+\b', (title + " " + summary).lower())
-    relevant_keywords = [kw for kw in keywords if len(kw) > 3 and kw not in ["the", "and"]]
-    hashtags = [f"#{kw.capitalize()}" for kw in relevant_keywords[:2]]
-    hashtags_str = " ".join(hashtags)
+    # Extraer entidades clave (juegos, plataformas, desarrolladores)
+    entities = []
+    entity_patterns = [
+        (r"\b(playstation|ps[45])\b", "PlayStation"),
+        (r"\b(xbox|series [xs])\b", "Xbox"),
+        (r"\b(nintendo|switch)\b", "Nintendo"),
+        (r"\b(pc|steam|epic games)\b", "PC"),
+        (r"\b(elden ring|cyberpunk 2077|call of duty|fortnite|god of war|zelda|halo)\b", lambda m: m.group(0).title()),
+        (r"\b(fromsoftware|ubisoft|activision|ea sports|square enix)\b", lambda m: m.group(0).title())
+    ]
+    for pattern, entity_name in entity_patterns:
+        for text in [title_lower, summary_lower]:
+            matches = re.findall(pattern, text, re.IGNORECASE)
+            for match in matches:
+                entities.append(entity_name(match) if callable(entity_name) else entity_name)
+    entities = list(dict.fromkeys(entities))[:2]  # Limitar a 2 entidades únicas
 
-    short_url = await shorten_url(url) if url else ""
-    fixed_length = len(emojis) + 1 + len(title_text) + 2 + len(hashtags_str) + (len(short_url) + 1 if short_url else 0)
-    available_chars = 280 - fixed_length - len(" ¡Descubre más! ") - 5
+    # Generar gancho dinámico basado en tipo, tono y entidades
+    hooks_en = {
+        "release": {
+            "enthusiastic": lambda e: f"{emoji} {e[0] if e else 'Epic game'} just dropped! Dive in!",
+            "default": lambda e: f"{emoji} {e[0] if e else 'New title'} hits the scene!"
+        },
+        "update": {
+            "informative": lambda e: f"{emoji} {e[0] if e else 'Game'} gets a fresh update! Details!",
+            "default": lambda e: f"{emoji} New patch for {e[0] if e else 'your fave'}!"
+        },
+        "announce": {
+            "urgent": lambda e: f"{emoji} Huge {e[0] if e else 'game'} reveal! Must-see!",
+            "default": lambda e: f"{emoji} {e[0] if e else 'Big news'} just announced!"
+        },
+        "deal": {
+            "promotional": lambda e: f"{emoji} Steal {e[0] if e else 'games'} now! Hot deal!",
+            "default": lambda e: f"{emoji} Save big on {e[0] if e else 'top titles'}!"
+        },
+        "urgent": {
+            "urgent": lambda e: f"{emoji} Alert! {e[0] if e else 'Game'} news you need NOW!",
+            "default": lambda e: f"{emoji} Urgent {e[0] if e else 'gaming'} update!"
+        },
+        "default": {
+            "enthusiastic": lambda e: f"{emoji} {e[0] if e else 'Gaming'} news to hype you up!",
+            "default": lambda e: f"{emoji} Fresh scoop for {e[0] if e else 'gamers'}!"
+        }
+    }
+    hooks_es = {
+        "release": {
+            "enthusiastic": lambda e: f"{emoji} ¡{e[0] if e else 'Juego épico'} ya llegó! ¡Juega ya!",
+            "default": lambda e: f"{emoji} ¡{e[0] if e else 'Nuevo título'} aterriza hoy!"
+        },
+        "update": {
+            "informative": lambda e: f"{emoji} ¡{e[0] if e else 'Juego'} actualizado! ¡Mira qué hay!",
+            "default": lambda e: f"{emoji} ¡Parche nuevo para {e[0] if e else 'tu favorito'}!"
+        },
+        "announce": {
+            "urgent": lambda e: f"{emoji} ¡Bombazo! ¡{e[0] if e else 'Juego'} revelado!",
+            "default": lambda e: f"{emoji} ¡{e[0] if e else 'Gran noticia'} anunciada!"
+        },
+        "deal": {
+            "promotional": lambda e: f"{emoji} ¡Oferta! ¡Consigue {e[0] if e else 'juegos'} ya!",
+            "default": lambda e: f"{emoji} ¡Ahorra en {e[0] if e else 'títulos top'}!"
+        },
+        "urgent": {
+            "urgent": lambda e: f"{emoji} ¡Alerta! ¡{e[0] if e else 'Noticia'} que debes saber!",
+            "default": lambda e: f"{emoji} ¡Urgente para {e[0] if e else 'gamers'}!"
+        },
+        "default": {
+            "enthusiastic": lambda e: f"{emoji} ¡{e[0] if e else 'Gaming'} al rojo vivo!",
+            "default": lambda e: f"{emoji} ¡Lo último para {e[0] if e else 'gamers'}!"
+        }
+    }
+    hook_dict = hooks_en if language == "en" else hooks_es
+    hook = hook_dict[news_type].get(tone, hook_dict[news_type]["default"])(entities)
 
-    summary_to_include = summary_text[:available_chars]
-    if len(summary_text) > available_chars:
-        summary_to_include = summary_to_include.rsplit(' ', 1)[0] + "..."
+    # Optimizar contenido: seleccionar la frase más impactante
+    content_source = title if len(title) < len(summary) and title else summary
+    if not content_source:
+        content_source = title or summary or "Check out this gaming news!"
+    sentences = re.split(r'[.!?]+', clean_text(content_source))
+    prioritized_sentences = []
+    for sentence in sentences:
+        sentence = sentence.strip()
+        if not sentence:
+            continue
+        score = len(sentence.split()) * 0.1  # Penalizar oraciones muy cortas
+        for entity in entities:
+            if entity.lower() in sentence.lower():
+                score += 5
+        for trend in trends:
+            if trend.lower() in sentence.lower() and len(trend) <= 15:
+                score += 3
+        prioritized_sentences.append((sentence, score))
+    prioritized_sentences.sort(key=lambda x: x[1], reverse=True)
+    content = prioritized_sentences[0][0] if prioritized_sentences else content_source
 
-    cta = "¡Descubre más!" if language == 'es' else "Find out more!"
-    tweet = f"{emojis} {title_text}. {summary_to_include} {cta} {hashtags_str} {short_url}".strip()
-    if len(tweet) > 280:
-        tweet = tweet[:277] + "..."
+    # Traducir si es necesario y asegurar coherencia
+    if language == "es" and "twitter" not in url.lower():
+        content = await translate_to_spanish(content)
+    content = content[:max_content_length - len(hook) - 10].strip()
+    if not content.endswith((".", "!", "?")):
+        content = content.rstrip(".,!?") + ("!" if tone in ["enthusiastic", "urgent", "promotional"] else ".")
 
+    # Generar hashtags hiper relevantes
+    hashtag_candidates = []
+    for entity in entities:
+        hashtag = re.sub(r"\s+", "", entity)
+        if len(hashtag) <= 15 and hashtag not in hashtag_candidates:
+            hashtag_candidates.append(hashtag)
+    for trend in trends:
+        trend_clean = re.sub(r"\s+", "", trend)
+        if (len(trend_clean) <= 15 and
+            any(kw in trend.lower() for kw in ["game", "gaming"] + [e.lower() for e in entities]) and
+            trend_clean not in hashtag_candidates):
+            hashtag_candidates.append(trend_clean)
+    if len(hashtag_candidates) < 2:
+        hashtag_candidates.extend([h for h in ["GamingNews", "GamersUnite", "GameOn"] if h not in hashtag_candidates])
+    hashtag_str = " " + " ".join(f"#{h}" for h in hashtag_candidates[:2])
+
+    # Construir el tweet
+    tweet = f"{hook} {content} {short_url}{hashtag_str}"
+    if len(tweet) > CONFIG["TWEET"]["MAX_LENGTH"]:
+        content = content[:max_content_length - len(hook) - len(hashtag_str) - 15] + "..."
+        tweet = f"{hook} {content} {short_url}{hashtag_str}"
+
+    logging.debug(f"Tweet generado ({language}, tipo: {news_type}, tono: {tone}, entidades: {entities}): {tweet}")
     return tweet
-
-async def generate_weather_tweet(language: str, source_url: str) -> str:
-    global bot_status
-    bot_status["last_task"] = f"Generando tweet del mapa del tiempo en {language}"
-    try:
-        tomorrow = (datetime.now() + timedelta(days=1)).strftime("%d/%m/%Y")
-        short_url = await shorten_url(source_url)
-        if language == "es":
-            tweet = f"🌤️ Pronóstico del tiempo en España para mañana ({tomorrow}). #Tiempo #Meteorología {short_url}"
-        else:
-            tweet = f"🌤️ Weather forecast for Spain for tomorrow ({tomorrow}). #Weather #Meteorology {short_url}"
-        
-        if len(tweet) > CONFIG["TWEET"]["MAX_LENGTH"]:
-            tweet = tweet[:CONFIG["TWEET"]["MAX_LENGTH"]-3] + "..."
-        
-        logging.info(f"Tweet del tiempo generado ({len(tweet)} chars): {tweet}")
-        return tweet
-    except Exception as e:
-        logging.error(f"Error generando tweet del tiempo en {language}: {e}", exc_info=True)
-        bot_status["errors"] += 1
-        save_bot_state_sync(cursor, conn)
-        return ""
 
 import aiohttp
 import os
@@ -1756,153 +1908,532 @@ import colorlog
 from datetime import datetime, timedelta
 from bs4 import BeautifulSoup
 from urllib.parse import urljoin
-
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
 import time
+import requests
+import asyncio
+import logging
+from datetime import datetime, timedelta
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from apscheduler.triggers.cron import CronTrigger
+from tweepy import API, OAuthHandler
+from tweepy.errors import TweepyException
+from bs4 import BeautifulSoup
+from PIL import Image, ImageDraw, ImageFont
+import io
 
-def capture_map_screenshot(url, output_path):
+async def fetch_weather_data():
     """
-    Captura una imagen del mapa meteorológico desde la URL dada usando Selenium.
-    
-    Args:
-        url (str): URL de la página con el mapa (ej. "https://www.eltiempo.es/lluvia").
-        output_path (str): Ruta donde guardar la captura (formato PNG).
+    Obtiene datos meteorológicos de AEMET para las ciudades.
     """
-    options = Options()
-    options.headless = True  # Ejecutar Chrome sin interfaz gráfica
-    driver = webdriver.Chrome(options=options)
-    
-    # Ajustar el tamaño de la ventana para capturar el mapa completo
-    driver.set_window_size(1200, 800)
-    
-    # Abrir la URL
-    driver.get(url)
-    
-    # Esperar a que el mapa se cargue completamente
-    time.sleep(5)
-    
-    # Guardar la captura de pantalla
-    driver.save_screenshot(output_path)
-    
-    # Cerrar el navegador
-    driver.quit()
-    
-    logging.info(f"✅ Captura guardada en {output_path}")
+    for city in CONFIG["CITIES"]:
+        try:
+            city_url = f"{CONFIG['WEATHER']['AEMET_CITY_URL']}/{city['aemet_id']}"
+            response = requests.get(city_url, timeout=10)
+            if response.status_code != 200:
+                continue
+            soup = BeautifulSoup(response.text, "html.parser")
+            
+            # Obtener temperaturas
+            temp_data = soup.find("div", class_="prediccion_diaria")
+            if temp_data:
+                min_temp = temp_data.find("span", class_="temp_min").text.strip() if temp_data.find("span", class_="temp_min") else "N/A"
+                max_temp = temp_data.find("span", class_="temp_max").text.strip() if temp_data.find("span", class_="temp_max") else "N/A"
+                city["temp"] = {"min": min_temp, "max": max_temp}
+            else:
+                city["temp"] = {"min": "N/A", "max": "N/A"}
+            
+            # Obtener estado del cielo
+            sky_state = soup.find("img", class_="icono_estado_cielo")["src"] if soup.find("img", class_="icono_estado_cielo") else ""
+            if "11" in sky_state:
+                city["icon"] = "despejado"
+            elif "16" in sky_state:
+                city["icon"] = "nubes"
+            elif "43" in sky_state:
+                city["icon"] = "lluvia"
+            elif "46" in sky_state:
+                city["icon"] = "truenos"
+            elif "67" in sky_state:
+                city["icon"] = "nieve"
+            elif "80" in sky_state:
+                city["icon"] = "niebla"
+            else:
+                city["icon"] = "nubes"  # Por defecto
+        except Exception as e:
+            logging.warning(f"Error al obtener datos de {city['name']}: {e}")
+            city["temp"] = {"min": "N/A", "max": "N/A"}
+            city["icon"] = "nubes"
 
-async def post_weather_map(session):
-    global bot_status
-    print_section_header("Publicando Pronóstico del Tiempo", color="magenta")
-    
+    # Descargar mapa base
     try:
-        # Configuración
-        map_url = CONFIG["WEATHER"]["MAP_URL"]  # "https://www.eltiempo.es/lluvia"
-        tomorrow = (datetime.now() + timedelta(days=1)).strftime("%d/%m/%Y")
-        
-        # Obtener resumen del pronóstico
-        forecast_text = await get_weather_forecast(session, tomorrow)
-        tweet_text = f"{forecast_text} #TiempoEspaña"
-        
-        logging.debug(f"📝 Preparando tweet: {tweet_text}")
-        print(f"\033[1;36m📅 Pronóstico para: {tomorrow}\033[0m")
-        print(f"\033[1;36m📝 Tweet: {tweet_text[:50]}...\033[0m")
-
-        # Capturar imagen del mapa con Selenium
-        loop = asyncio.get_event_loop()
-        output_path = os.path.join(CONFIG["PATHS"]["TEMP_IMAGE_DIR"], f"weather_map_{tomorrow.replace('/', '-')}.png")
-        await loop.run_in_executor(None, capture_map_screenshot, map_url, output_path)
-        
-        # Leer la imagen capturada
-        async with aiofiles.open(output_path, "rb") as f:
-            media_data = await f.read()
-        media_type = "image"
-
-        # Optimizar la imagen si es necesario
-        optimized_data = await optimize_image(media_data)
-        if optimized_data:
-            media_data = optimized_data
-            logging.debug("Imagen optimizada exitosamente")
+        map_response = requests.get(CONFIG["WEATHER"]["BASE_MAP_URL"], stream=True, timeout=10)
+        if map_response.status_code == 200:
+            map_image = Image.open(io.BytesIO(map_response.content)).convert("RGBA")
         else:
-            logging.warning("No se pudo optimizar la imagen, usando original")
+            logging.error(f"Error {map_response.status_code} al descargar el mapa base.")
+            map_image = Image.new("RGBA", (1000, 600), (255, 255, 255, 255))
+            draw = ImageDraw.Draw(map_image)
+            draw.rectangle((100, 100, 900, 500), fill=(200, 200, 200, 255))
+    except Exception as e:
+        logging.error(f"Error al descargar el mapa base: {e}")
+        map_image = Image.new("RGBA", (1000, 600), (255, 255, 255, 255))
+        draw = ImageDraw.Draw(map_image)
+        draw.rectangle((100, 100, 900, 500), fill=(200, 200, 200, 255))
 
-        # Publicar el tweet
-        success = await post_tweet(
-            session=session,
-            title=tweet_text,
-            summary=tweet_text,
-            url="",
-            image_data=media_data,
-            news_hash=hashlib.sha256(tweet_text.encode()).hexdigest(),
-            score=1.0,
-            source="weather_map",
-            language="es",
-            trends=["#TiempoEspaña", "#Pronostico"]
+    return map_image
+
+async def generate_weather_summary():
+    """
+    Genera un resumen general del tiempo basado en las condiciones predominantes.
+    """
+    regions = {
+        "norte": [],
+        "noroeste": [],
+        "centro": [],
+        "este": [],
+        "sur": [],
+        "islas": []
+    }
+    for city in CONFIG["CITIES"]:
+        regions[city["region"]].append(city["icon"])
+
+    summary = []
+    for region, conditions in regions.items():
+        if conditions:
+            most_common = Counter(conditions).most_common(1)[0][0]
+            if region == "norte" and most_common:
+                summary.append(f"truenos⛈️" if most_common == "truenos" else f"{most_common}☁️")
+            elif region == "sur" and most_common:
+                summary.append(f"sol☀️" if most_common == "despejado" else f"{most_common}🌧️")
+            elif region == "islas" and most_common:
+                summary.append(f"sol☀️" if most_common == "despejado" else f"{most_common}🌫️")
+
+    if len(summary) >= 2:
+        return f"¡Mañana {summary[0]} en sur & {summary[1]} en norte! 🌈"
+    elif summary:
+        return f"¡Mañana {summary[0]} en España! 🌈"
+    else:
+        return "¡Mañana tiempo loco en España! 🌈"
+
+async def create_weather_map(map_image):
+    """
+    Crea un mapa meteorológico colorido y lleno de emojis.
+    """
+    # Crear lienzo con fondo degradado amarillo-rosa
+    canvas = Image.new("RGBA", (1200, 800), (255, 204, 0, 255))
+    draw = ImageDraw.Draw(canvas)
+    for y in range(800):
+        r = 255
+        g = int(204 - (y / 800) * 100)
+        b = int((y / 800) * 150)
+        draw.line((0, y, 1200, y), fill=(r, g, b, 255))
+
+    # Añadir efecto de brillo al mapa base
+    map_image = map_image.resize((1000, 600), Image.Resampling.LANCZOS)
+    canvas.paste(map_image, (100, 150), map_image)
+    draw.rectangle((95, 145, 1105, 755), outline=(255, 0, 255, 255), width=5)
+
+    # Añadir título con emojis
+    tomorrow = datetime.now() + timedelta(days=1)
+    day_name = tomorrow.strftime("%A").upper()
+    date_str = tomorrow.strftime("%d de %B").lower()
+    title = f"¡Tiempo Loco 🎉 {day_name} {date_str}! 🌈"
+    try:
+        font = ImageFont.truetype("arialbd.ttf", 40)
+        small_font = ImageFont.truetype("arial.ttf", 15)
+        emoji_font = ImageFont.truetype("seguiemj.ttf", 40)
+    except:
+        font = small_font = emoji_font = ImageFont.load_default()
+    draw.text((52, 52), title, fill=(0, 0, 0, 255), font=font)
+    draw.text((50, 50), title, fill=(255, 0, 0, 255), font=font)
+
+    # Añadir estrellas y emojis decorativos
+    for _ in range(5):
+        x, y = random.randint(50, 1150), random.randint(50, 100)
+        draw.text((x-5, y-5), "⭐", font=emoji_font, fill=(255, 255, 0, 255))
+
+    # Añadir emojis, temperaturas y mensajes
+    try:
+        temp_font = ImageFont.truetype("arial.ttf", 25)
+    except:
+        temp_font = ImageFont.load_default()
+    for city in CONFIG["CITIES"]:
+        x, y = city["coords"]
+        emoji = CONFIG["FUN_EMOJIS"].get(city["icon"], "☁️")
+        extra_emoji = CONFIG["EXTRA_EMOJIS"].get(city["icon"], "🌸")
+        draw.text((x - 20, y - 60), emoji, font=emoji_font, fill=(0, 0, 0, 255))
+        draw.text((x + 20, y - 60), extra_emoji, font=emoji_font, fill=(0, 0, 0, 255))
+        
+        temp_text = f"{city['name']}: {city['temp']['min']}° / {city['temp']['max']}°"
+        color = CONFIG["TEXT_COLORS"].get(city["icon"], (0, 0, 0, 255))
+        draw.rectangle([x-5, y+5, x+150, y+40], fill=(255, 255, 255, 200))
+        draw.text((x, y+10), temp_text, fill=color, font=temp_font)
+
+        # Añadir mensaje gracioso pequeño
+        message = random.choice(CONFIG["FUN_MESSAGES"].get(city["icon"], ["¡Qué tiempo tan loco!"]))
+        draw.text((x, y+50), message, fill=(0, 0, 0, 255), font=small_font)
+
+    # Añadir personaje con más emojis
+    draw.ellipse((1050, 650, 1150, 750), fill=(255, 255, 0, 255))
+    draw.ellipse((1070, 670, 1080, 680), fill=(0, 0, 0, 255))
+    draw.ellipse((1120, 670, 1130, 680), fill=(0, 0, 0, 255))
+    draw.line((1080, 675, 1120, 675), fill=(0, 0, 0, 255))
+    draw.arc((1080, 700, 1120, 720), 0, 180, fill=(0, 0, 0, 255))
+    draw.polygon([(1100, 650), (1080, 620), (1120, 620)], fill=(255, 0, 0, 255))
+    for i in range(8):
+        angle = i * 45
+        x1 = 1100 + 70 * (1 if i % 2 == 0 else 0.7) * (1 if i < 4 else -1)
+        y1 = 700 + 70 * (1 if i % 2 == 0 else 0.7) * (1 if i in [2, 3, 6, 7] else -1)
+        draw.line((1100, 700, x1, y1), fill=(255, 255, 0, 255), width=3)
+    draw.text((1060, 620), "🌟", font=emoji_font, fill=(255, 255, 0, 255))
+    draw.text((1140, 620), "🎵", font=emoji_font, fill=(255, 255, 0, 255))
+
+    # Guardar la imagen
+    canvas.save(CONFIG["WEATHER"]["OUTPUT_PATH"], "PNG")
+    logging.info(f"Mapa guardado en {CONFIG['WEATHER']['OUTPUT_PATH']}")
+
+async def fetch_and_post_weather():
+    """
+    Genera y publica el pronóstico con más emojis en un solo tweet.
+    """
+    logging.info("Generando pronóstico divertido...")
+    map_image = await fetch_weather_data()
+    if map_image:
+        await create_weather_map(map_image)
+        summary = await generate_weather_summary()
+        # Añadir más emojis al tweet
+        message = f"{summary} ☀️🌧️⛈️❄️🌫️🎉 #TiempoLoco {CONFIG['WEATHER']['WEBSITE_URL']}"
+        # Asegurarse de que el tweet no exceda 280 caracteres
+        if len(message) > 280:
+            message = message[:270] + "..."
+        try:
+            with open(CONFIG["WEATHER"]["OUTPUT_PATH"], "rb") as image_file:
+                media = app.media_upload(filename="weather_map_fun.png", file=image_file)
+            app.update_status(status=message, media_ids=[media.media_id])
+            logging.info(f"Tweet publicado: {message}")
+        except TweepyException as e:
+            logging.error(f"Error al publicar tweet: {e}")
+        
+async def fetch_and_post_carbon_intensity():
+    """
+    Consulta la API de Electricity Maps para España (intensidad de carbono y desglose de fuentes de energía)
+    usando requests, y publica un tweet diario en español con un comentario sobre baja inercia si la generación
+    solar es alta, respetando los límites del plan gratuito de Twitter (50 tweets/día, 1500/mes).
+    """
+    global bot_status
+    logging.info("Iniciando consulta a Electricity Maps para tweet de intensidad de carbono y fuentes en España")
+
+    # Verificar si ya se publicó hoy
+    last_carbon_tweet = bot_status.get("last_carbon_tweet", 0)
+    current_day = datetime.utcnow().date().isoformat()
+    if last_carbon_tweet == current_day:
+        logging.info("Tweet de carbono ya publicado hoy. Omitiendo.")
+        return
+
+    # Verificar límites de Twitter
+    tweets_remaining = CONFIG["API_LIMITS"]["TWEETS_PER_DAY"] - bot_status["daily_tweets_total"]
+    monthly_remaining = CONFIG["API_LIMITS"]["MONTHLY_POSTS_TOTAL"] - (bot_status["monthly_posts_en"] + bot_status["monthly_posts_es"])
+    if tweets_remaining <= 0 or monthly_remaining <= 0:
+        logging.warning("Límite diario o mensual de Twitter alcanzado. No se publicará tweet de carbono.")
+        return
+
+    # Consultar intensidad de carbono
+    carbon_data = None
+    for attempt in range(2):
+        try:
+            response = await asyncio.to_thread(
+                requests.get,
+                CONFIG["ELECTRICITY_MAPS"]["CARBON_INTENSITY_URL"],
+                headers={"auth-token": CONFIG["ELECTRICITY_MAPS"]["AUTH_TOKEN"]},
+                params={"zone": CONFIG["ELECTRICITY_MAPS"]["ZONE"]}
+            )
+            if response.status_code == 200:
+                carbon_data = response.json()
+                logging.debug(f"Datos de intensidad de carbono: {carbon_data}")
+                break
+            elif response.status_code == 429:
+                logging.warning(f"Error 429 en carbon-intensity, intento {attempt + 1}/2. Esperando 30s.")
+                await asyncio.sleep(30)
+            else:
+                logging.error(f"Error {response.status_code} al consultar carbon-intensity: {response.text}")
+                return
+        except Exception as e:
+            logging.error(f"Error en consulta a carbon-intensity, intento {attempt + 1}/2: {e}")
+            if attempt == 1:
+                logging.error("Fallo tras 2 intentos en carbon-intensity.")
+                return
+            await asyncio.sleep(30)
+
+    # Consultar desglose de fuentes
+    power_data = None
+    for attempt in range(2):
+        try:
+            response = await asyncio.to_thread(
+                requests.get,
+                CONFIG["ELECTRICITY_MAPS"]["POWER_BREAKDOWN_URL"],
+                headers={"auth-token": CONFIG["ELECTRICITY_MAPS"]["AUTH_TOKEN"]},
+                params={"zone": CONFIG["ELECTRICITY_MAPS"]["ZONE"]}
+            )
+            if response.status_code == 200:
+                power_data = response.json()
+                logging.debug(f"Datos de power-breakdown: {power_data}")
+                break
+            elif response.status_code == 429:
+                logging.warning(f"Error 429 en power-breakdown, intento {attempt + 1}/2. Esperando 30s.")
+                await asyncio.sleep(30)
+            else:
+                logging.warning(f"Error {response.status_code} al consultar power-breakdown: {response.text}")
+                break
+        except Exception as e:
+            logging.warning(f"Error en consulta a power-breakdown, intento {attempt + 1}/2: {e}")
+            if attempt == 1:
+                logging.warning("Fallo tras 2 intentos en power-breakdown. Continuando con solo intensidad de carbono.")
+                break
+            await asyncio.sleep(30)
+
+    # Procesar datos de intensidad de carbono
+    carbon_intensity = None
+    if carbon_data:
+        try:
+            carbon_intensity = carbon_data.get("carbonIntensity", 0)
+            zone = carbon_data.get("zone", CONFIG["ELECTRICITY_MAPS"]["ZONE"])
+            if not carbon_intensity or not zone:
+                logging.error("Datos inválidos de carbon-intensity. No se publicará tweet.")
+                return
+        except Exception as e:
+            logging.error(f"Error procesando datos de carbon-intensity: {e}")
+            return
+
+    # Procesar datos de power-breakdown y detectar baja inercia
+    renewable_percentage = None
+    sources_text = ""
+    low_inertia_message = ""
+    SOLAR_THRESHOLD = 0.3  # Umbral para alta generación solar (30%)
+    if power_data:
+        try:
+            renewable_percentage = power_data.get("renewablePercentage", 0)
+            breakdown = power_data.get("powerConsumptionBreakdown", {})
+            sources = [
+                (key, value) for key, value in breakdown.items()
+                if value and key in ["solar", "wind", "hydro", "nuclear", "gas", "coal"]
+            ]
+            total = sum(value for _, value in sources)
+            if total > 0:
+                solar_mw = breakdown.get("solar", 0)
+                solar_percentage = solar_mw / total if total > 0 else 0
+                if solar_percentage >= SOLAR_THRESHOLD:
+                    low_inertia_message = "Alta generación solar reduce la inercia del sistema. ¡Necesitamos más almacenamiento!"
+                sources.sort(key=lambda x: x[1], reverse=True)
+                top_sources = sources[:3]
+                sources_text = ", ".join(
+                    f"{key} {round((value / total) * 100)}%" for key, value in top_sources
+                )
+                sources_text = f" ({sources_text})"
+        except Exception as e:
+            logging.warning(f"Error procesando datos de power-breakdown: {e}")
+            sources_text = ""
+            renewable_percentage = None
+            low_inertia_message = ""
+
+    # Generar tweet en español
+    short_url = await shorten_url(CONFIG["ELECTRICITY_MAPS"]["WEBSITE_URL"])
+    if carbon_intensity and renewable_percentage and sources_text:
+        message = (
+            f"🌍 Intensidad de carbono en España: {carbon_intensity} gCO2eq/kWh. "
+            f"⚡️ Energía: {renewable_percentage}% renovable{sources_text}. "
+            f"{low_inertia_message} ¡Por un futuro verde! {short_url} #Sostenibilidad #IntensidadDeCarbono"
+        ).strip()
+    elif carbon_intensity:
+        message = (
+            f"🌍 Intensidad de carbono en España: {carbon_intensity} gCO2eq/kWh. "
+            f"¡Energía más limpia para un futuro sostenible! ⚡️ {short_url} #Sostenibilidad #IntensidadDeCarbono"
+        )
+    else:
+        logging.error("No se pudieron obtener datos válidos. No se publicará tweet.")
+        return
+
+    # Ajustar longitud del tweet
+    if len(message) > CONFIG["TWEET"]["MAX_LENGTH"]:
+        if renewable_percentage and low_inertia_message:
+            message = (
+                f"🌍 Carbono en España: {carbon_intensity} gCO2eq/kWh. "
+                f"⚡️ {renewable_percentage}% renovable. Alta generación solar reduce la inercia. {short_url} #Sostenibilidad"
+            )
+        elif renewable_percentage:
+            message = (
+                f"🌍 Carbono en España: {carbon_intensity} gCO2eq/kWh. "
+                f"⚡️ {renewable_percentage}% renovable. ¡Vamos por lo verde! {short_url} #Sostenibilidad"
+            )
+        else:
+            message = (
+                f"🌍 Carbono en España: {carbon_intensity} gCO2eq/kWh. "
+                f"¡Vamos por lo verde! ⚡️ {short_url} #Sostenibilidad"
+            )
+
+    # Publicar tweet en español
+    try:
+        await make_twitter_request(
+            app.update_status,
+            status=message,
+            category="write_es",
+            endpoint="/statuses/update",
+            priority=1.0
+        )
+        bot_status["daily_tweets_total"] += 1
+        bot_status["monthly_posts_es"] += 1
+        bot_status["last_carbon_tweet"] = current_day
+        logging.info(f"Tweet de carbono publicado: {message[:50]}...")
+        await save_bot_state()
+    except Exception as e:
+        logging.error(f"Error publicando tweet de carbono: {e}")
+
+# 3. Actualizar función capture_map_screenshot
+def capture_map_screenshot(map_url, output_path):
+    """
+    Captura una captura de pantalla del mapa meteorológico usando Selenium con reintentos,
+    optimizaciones para carga completa y evasión de detección anti-bots.
+    """
+    logging.info(f"Iniciando captura de mapa meteorológico desde {map_url}")
+    driver = None
+    for attempt in range(2):
+        try:
+            # Configurar ChromeDriver para evitar detección
+            chrome_options = Options()
+            chrome_options.add_argument("--headless")  # Sin interfaz gráfica
+            chrome_options.add_argument("--no-sandbox")
+            chrome_options.add_argument("--disable-dev-shm-usage")
+            chrome_options.add_argument("--disable-gpu")
+            chrome_options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+            chrome_options.add_experimental_option("excludeSwitches", ["enable-automation"])
+            chrome_options.add_experimental_option("useAutomationExtension", False)
+
+            driver = webdriver.Chrome(options=chrome_options)
+            driver.set_page_load_timeout(30)  # Timeout de carga de página
+
+            # Cargar la página
+            driver.get(map_url)
+            logging.debug("Página cargada, esperando carga completa del DOM")
+
+            # Esperar carga completa del DOM
+            WebDriverWait(driver, 20).until(
+                lambda d: d.execute_script("return document.readyState") == "complete"
+            )
+
+            # Intentar manejar popup de cookies (si existe)
+            try:
+                cookie_button = WebDriverWait(driver, 5).until(
+                    EC.element_to_be_clickable((By.CSS_SELECTOR, "button#accept-cookies, .accept-cookies"))
+                )
+                cookie_button.click()
+                logging.info("Popup de cookies aceptado")
+            except TimeoutException:
+                logging.info("No se encontró el popup de cookies o ya fue aceptado")
+
+            # Esperar el elemento del mapa (ajusta el selector según tu página)
+            map_element = WebDriverWait(driver, 20).until(
+                EC.presence_of_element_located((By.CSS_SELECTOR, "div#map"))  # Reemplaza con el selector correcto
+            )
+            logging.debug("Elemento del mapa encontrado")
+
+            # Asegurar que el mapa esté visible
+            driver.execute_script("arguments[0].scrollIntoView();", map_element)
+            time.sleep(2)  # Espera adicional para renderizado
+
+            # Capturar captura de pantalla del elemento
+            map_element.screenshot(output_path)
+            logging.info(f"Captura de pantalla guardada en {output_path}")
+            return True
+
+        except TimeoutException as e:
+            logging.warning(f"Timeout en captura de mapa, intento {attempt + 1}/2: {e}")
+            if attempt == 1:
+                logging.error("Fallo tras 2 intentos en captura de mapa")
+                return False
+            time.sleep(30)  # Esperar antes de reintentar
+        except Exception as e:
+            logging.error(f"Error en captura de mapa, intento {attempt + 1}/2: {e}")
+            if attempt == 1:
+                logging.error("Fallo tras 2 intentos en captura de mapa")
+                return False
+            time.sleep(30)
+        finally:
+            if driver:
+                driver.quit()
+
+    return False
+
+# 4. Actualizar función post_weather_map
+async def post_weather_map():
+    """
+    Publica un tweet con el mapa meteorológico capturado, respetando los límites de Twitter.
+    """
+    global bot_status
+    logging.info("Iniciando publicación de tweet con pronóstico del tiempo")
+
+    # Verificar si ya se publicó hoy
+    last_weather_tweet = bot_status.get("last_weather_tweet", 0)
+    current_day = datetime.utcnow().date().isoformat()
+    if last_weather_tweet == current_day:
+        logging.info("Tweet de pronóstico del tiempo ya publicado hoy. Omitiendo.")
+        return
+
+    # Verificar límites de Twitter
+    tweets_remaining = CONFIG["API_LIMITS"]["TWEETS_PER_DAY"] - bot_status["daily_tweets_total"]
+    monthly_remaining = CONFIG["API_LIMITS"]["MONTHLY_POSTS_TOTAL"] - (bot_status["monthly_posts_en"] + bot_status["monthly_posts_es"])
+    if tweets_remaining <= 0 or monthly_remaining <= 0:
+        logging.warning("Límite diario o mensual de Twitter alcanzado. No se publicará tweet de pronóstico.")
+        return
+
+    # Capturar mapa
+    loop = asyncio.get_event_loop()
+    success = await loop.run_in_executor(
+        None,
+        capture_map_screenshot,
+        CONFIG["WEATHER"]["MAP_URL"],
+        CONFIG["WEATHER"]["OUTPUT_PATH"]
+    )
+
+    if not success:
+        logging.error("No se pudo capturar el mapa meteorológico. No se publicará tweet.")
+        return
+
+    # Generar tweet en español
+    short_url = await shorten_url(CONFIG["WEATHER"]["WEBSITE_URL"])
+    message = (
+        f"☀️ Pronóstico del tiempo en España: ¡Mira el mapa de hoy! 🌦️ "
+        f"Prepárate para el día. {short_url} #Tiempo #Pronóstico"
+    )
+    if len(message) > CONFIG["TWEET"]["MAX_LENGTH"]:
+        message = (
+            f"☀️ Pronóstico en España: ¡Mapa de hoy! 🌦️ "
+            f"{short_url} #Tiempo"
         )
 
-        if success:
-            logging.info(f"✅ Pronóstico del tiempo publicado exitosamente")
-            print(f"\033[1;32m✅ Publicado: {tweet_text[:50]}...\033[0m")
-        else:
-            logging.error(f"❌ Error publicando el pronóstico del tiempo")
-            print(f"\033[1;31m❌ Error al publicar el pronóstico\033[0m")
-            bot_status["errors"] += 1
-
-    except Exception as e:
-        logging.error(f"❌ Error en post_weather_map: {e}", exc_info=True)
-        print(f"\033[1;31m❌ Error: {e}\033[0m")
-        bot_status["errors"] += 1
-    finally:
-        # Limpiar archivo temporal
-        if os.path.exists(output_path):
-            await asyncio.to_thread(os.remove, output_path)
-        print(f"\033[1;34m{'─' * 60}\033[0m\n")
-
-async def get_weather_forecast(session, date):
-    """Obtiene un resumen del pronóstico para el día especificado usando OpenWeatherMap."""
+    # Publicar tweet con imagen
     try:
-        api_key = CONFIG["WEATHER"].get("OPENWEATHER_API_KEY")
-        if not api_key:
-            logging.warning("⚠️ Clave de OpenWeatherMap no configurada. Usando texto genérico.")
-            return CONFIG["WEATHER"].get("FORECAST_TEMPLATE", "Pronóstico para {date}: 🌧️ Lluvias moderadas.").format(date=date)
-        
-        url = f"http://api.openweathermap.org/data/2.5/forecast?q=Madrid,ES&appid={api_key}&units=metric"
-        async with session.get(url) as response:
-            if response.status != 200:
-                logging.error(f"❌ Error en API OpenWeatherMap: Código {response.status}")
-                return CONFIG["WEATHER"]["FORECAST_TEMPLATE"].format(date=date)
-            
-            data = await response.json()
-            tomorrow = (datetime.now() + timedelta(days=1)).strftime("%Y-%m-%d")
-            forecast = next((item for item in data["list"] if tomorrow in item["dt_txt"]), None)
-            if forecast:
-                rain = forecast.get("rain", {}).get("3h", 0)
-                wind = forecast["wind"]["speed"]
-                temp = forecast["main"]["temp"]
-                return f"Pronóstico para {date}: 🌧️ Lluvias: {rain}mm, 💨 Viento: {wind}m/s, 🌡️ Temp: {temp}°C."
-            return CONFIG["WEATHER"]["FORECAST_TEMPLATE"].format(date=date)
+        # Subir imagen a Twitter
+        with open(CONFIG["WEATHER"]["OUTPUT_PATH"], "rb") as image_file:
+            media = app.media_upload(filename="weather_map.png", file=image_file)
+        # Publicar tweet con imagen
+        await make_twitter_request(
+            app.update_status,
+            status=message,
+            media_ids=[media.media_id],
+            category="write_es",
+            endpoint="/statuses/update",
+            priority=1.0
+        )
+        bot_status["daily_tweets_total"] += 1
+        bot_status["monthly_posts_es"] += 1
+        bot_status["last_weather_tweet"] = current_day
+        logging.info(f"Tweet de pronóstico publicado: {message[:50]}...")
+        await save_bot_state()
     except Exception as e:
-        logging.error(f"❌ Error obteniendo pronóstico: {e}", exc_info=True)
-        return CONFIG["WEATHER"]["FORECAST_TEMPLATE"].format(date=date)
-
-async def scrape_weather_media(session, url):
-    """Busca y descarga un GIF real desde la página."""
-    try:
-        async with session.get(url, timeout=10) as response:
-            if response.status != 200:
-                return None, None
-            html = await response.text()
-            soup = BeautifulSoup(html, "html.parser")
-            # Busca un elemento con el GIF (ajusta según la estructura de la página)
-            gif_tag = soup.find("img", src=lambda src: src and src.lower().endswith(".gif"))
-            if gif_tag:
-                gif_url = urljoin(url, gif_tag["src"])
-                async with session.get(gif_url, timeout=10) as gif_response:
-                    if gif_response.status == 200 and gif_response.headers.get("Content-Type", "").startswith("image/gif"):
-                        return await gif_response.read(), "gif"
-            return None, None
-    except Exception as e:
-        print(f"Error al scrapear {url}: {e}")
-        return None, None
+        logging.error(f"Error publicando tweet de pronóstico: {e}")
 
 async def repost_tweet_from_url(tweet_url: str, summary: str, language: str = 'en') -> bool:
     global bot_status
@@ -2163,6 +2694,160 @@ async def post_tweet(session: aiohttp.ClientSession, title: str, summary: str, u
         if os.path.exists(temp_image_path):
             await asyncio.to_thread(os.remove, temp_image_path)
         # await asyncio.sleep(2) # Small pause after attempting to post (optional, make_twitter_request might already wait)
+
+async def review_queue():
+    """
+    Gestiona la cola de publicaciones con un sistema de espera avanzado que optimiza lecturas y escrituras,
+    maximizando el uso de los límites del plan gratuito (50 tweets/día, 1500 posts/mes).
+    """
+    global bot_status
+    bot_status["last_task"] = "Revisando cola de publicaciones"
+    logging.info("Iniciando revisión avanzada de la cola de publicaciones...")
+
+    try:
+        # Obtener estado actual de la API
+        current_time = time.time()
+        tweets_remaining = CONFIG["API_LIMITS"]["TWEETS_PER_DAY"] - bot_status["daily_tweets_total"]
+        monthly_remaining = CONFIG["API_LIMITS"]["MONTHLY_POSTS_TOTAL"] - (bot_status["monthly_posts_en"] + bot_status["monthly_posts_es"])
+        trends_last_updated = bot_status.get("trends_last_updated", 0)
+        trends_expired = current_time - trends_last_updated > 4 * 3600  # Actualizar tendencias cada 4 horas
+
+        # Obtener tendencias solo si es necesario
+        trends = []
+        if trends_expired or not bot_status.get("current_trends"):
+            trends = await get_trending_keywords()
+            bot_status["trends_last_updated"] = current_time
+            bot_status["current_trends"] = trends
+            logging.info("Tendencias actualizadas desde la API.")
+        else:
+            trends = bot_status["current_trends"]
+            logging.debug("Usando tendencias en caché.")
+
+        # Obtener elementos de la cola
+        cursor.execute("SELECT id, title, summary, url, news_hash, score, source, language, trends, added_at FROM cola_publicacion")
+        queue_items = await run_db_sync(cursor.fetchall)
+
+        if not queue_items:
+            logging.info("La cola de publicaciones está vacía.")
+            return
+
+        items_to_remove = []
+        items_to_publish = []
+        updated_items = []
+
+        # Calcular el número ideal de tweets por hora para distribuir uniformemente
+        hours_left_in_day = (24 - datetime.now().hour) % 24 or 24
+        ideal_tweets_per_hour = min(tweets_remaining / max(hours_left_in_day, 1), 3)  # Máximo 3 tweets/hora
+        min_wait_between_tweets = 3600 / max(ideal_tweets_per_hour, 1) if ideal_tweets_per_hour > 0 else 300
+
+        # Procesar cada elemento de la cola
+        for item in queue_items:
+            id, title, summary, url, news_hash, old_score, source, language, old_trends_json, added_at = item
+            added_at = datetime.fromisoformat(added_at) if isinstance(added_at, str) else added_at
+
+            # Recalcular puntuación
+            entry = {"title": title, "summary": summary, "link": url, "source": source, "date": added_at}
+            new_score = await score_news(entry, trends)
+
+            # Aplicar decaimiento por antigüedad (15% por día)
+            age_days = (datetime.now() - added_at).total_seconds() / (24 * 3600)
+            decay_factor = max(0, 1 - 0.15 * age_days)
+            new_score *= decay_factor
+
+            # Calcular índice de urgencia
+            urgency = new_score
+            if source.startswith("discord") or source in [f"twitter_{acc}" for acc in TWITTER_ACCOUNTS]:
+                urgency *= 1.2  # Priorizar fuentes clave
+            if any(trend.lower() in title.lower() or trend.lower() in summary.lower() for trend in trends):
+                urgency *= 1.3  # Aumentar si coincide con tendencias
+            urgency *= min(1, 1.5 - age_days / 2)  # Reducir para noticias antiguas
+            urgency *= (1 + 0.5 * tweets_remaining / CONFIG["API_LIMITS"]["TWEETS_PER_DAY"])  # Aumentar si hay muchos tweets disponibles
+            urgency *= (1 + 0.2 * monthly_remaining / CONFIG["API_LIMITS"]["MONTHLY_POSTS_TOTAL"])  # Aumentar si hay margen mensual
+
+            # Decidir acción
+            if new_score < 5 or age_days > 3:
+                items_to_remove.append(id)
+                logging.debug(f"Elemento {title[:50]} (ID: {id}) marcado para eliminar: puntuación {new_score:.1f}, edad {age_days:.1f} días")
+            else:
+                updated_items.append((new_score, json.dumps(trends), id))
+                # Determinar si publicar ahora o esperar
+                wait_time = 0
+                if tweets_remaining <= 3 or monthly_remaining <= 20:
+                    wait_time = 600  # Esperar 10 minutos si los límites están muy bajos
+                elif len(queue_items) > 40:
+                    wait_time = 180 * (1 - urgency / 20)  # Escalonar espera si la cola está casi llena
+                elif urgency < 8:
+                    wait_time = 90 * (1 - urgency / 15)  # Esperar más para noticias menos urgentes
+                wait_time = max(wait_time, min_wait_between_tweets)  # Respetar el ritmo ideal
+
+                # Verificar cooldowns y tiempos de espera de la API
+                lang_key = f"write_{language}"
+                last_tweet_time = bot_status.get(f"last_tweet_time_{language}")
+                api_wait_until = bot_status["twitter_wait_until"].get(lang_key, 0)
+                cooldown_elapsed = not last_tweet_time or (current_time - last_tweet_time.timestamp()) >= CONFIG["INTERVALS"]["TWEET_COOLDOWN_SECONDS"]
+
+                if wait_time <= 0 and current_time >= api_wait_until and cooldown_elapsed:
+                    items_to_publish.append((id, entry, new_score, language, trends, urgency))
+                    logging.debug(f"Elemento {title[:50]} (ID: {id}) listo para publicación: urgencia {urgency:.1f}")
+                else:
+                    logging.debug(f"Elemento {title[:50]} (ID: {id}) en espera: {wait_time:.1f}s, cooldown: {not cooldown_elapsed}, API wait: {api_wait_until - current_time:.1f}s")
+
+        # Ordenar elementos a publicar por urgencia
+        items_to_publish.sort(key=lambda x: x[5], reverse=True)
+
+        # Publicar elementos seleccionados, respetando límites
+        async with aiohttp.ClientSession() as session:
+            for id, entry, score, language, trends, urgency in items_to_publish[:tweets_remaining]:
+                if await publish_news(session, entry, entry.get("hash", ""), score, language, trends):
+                    items_to_remove.append(id)
+                    bot_status["daily_tweets_total"] += 1
+                    bot_status[f"monthly_posts_{language}"] += 1
+                    bot_status[f"last_tweet_time_{language}"] = datetime.now()
+                    logging.info(f"Publicado desde cola (ID: {id}): {entry['title'][:50]} en {language}")
+                    await asyncio.sleep(CONFIG["INTERVALS"]["API_REQUEST_DELAY_SECONDS"])
+                else:
+                    logging.warning(f"Fallo al publicar elemento (ID: {id}): {entry['title'][:50]}")
+
+        # Eliminar elementos irrelevantes o publicados
+        if items_to_remove:
+            await run_db_sync(
+                cursor.execute,
+                f"DELETE FROM cola_publicacion WHERE id IN ({','.join('?' * len(items_to_remove))})",
+                tuple(items_to_remove)
+            )
+            logging.info(f"Eliminados {len(items_to_remove)} elementos de la cola.")
+
+        # Actualizar puntuaciones
+        if updated_items:
+            await run_db_sync(
+                cursor.executemany,
+                "UPDATE cola_publicacion SET score = ?, trends = ? WHERE id = ?",
+                updated_items
+            )
+            logging.info(f"Actualizadas puntuaciones de {len(updated_items)} elementos.")
+
+        # Limitar la cola a 50 elementos
+        cursor.execute("SELECT COUNT(*) FROM cola_publicacion")
+        queue_size = (await run_db_sync(cursor.fetchone))[0]
+        if queue_size > 50:
+            excess = queue_size - 50
+            cursor.execute("SELECT id FROM cola_publicacion ORDER BY score ASC LIMIT ?", (excess,))
+            excess_ids = [row[0] for row in await run_db_sync(cursor.fetchall)]
+            await run_db_sync(
+                cursor.execute,
+                f"DELETE FROM cola_publicacion WHERE id IN ({','.join('?' * len(excess_ids))})",
+                tuple(excess_ids)
+            )
+            logging.info(f"Eliminados {len(excess_ids)} elementos para mantener límite de 50.")
+
+        await run_db_sync(conn.commit)
+        logging.info("Revisión avanzada de la cola completada.")
+
+    except Exception as e:
+        logging.error(f"Error revisando la cola de publicaciones: {e}", exc_info=True)
+        bot_status["errors"] += 1
+    finally:
+        await save_bot_state()
 
 async def process_queue():
     global bot_status
@@ -2833,13 +3518,10 @@ async def main():
     scheduler.add_job(process_news, IntervalTrigger(minutes=CONFIG["INTERVALS"]["PROCESS_NEWS_MINUTES"]), misfire_grace_time=300)
     scheduler.add_job(update_twitter_feeds, IntervalTrigger(minutes=CONFIG["INTERVALS"]["UPDATE_TWITTER_FEEDS_MINUTES"]), misfire_grace_time=300)
     scheduler.add_job(process_queue, IntervalTrigger(minutes=CONFIG["INTERVALS"]["QUEUE_PROCESSING_MINUTES"]), misfire_grace_time=300)
-    
-    # Programar tarea para el mapa del tiempo
-    async def scheduled_weather_post():
-        async with aiohttp.ClientSession() as session:
-            await post_weather_map(session)
-    scheduler.add_job(scheduled_weather_post, CronTrigger(hour=CONFIG["WEATHER"]["POST_HOUR"], minute=0), misfire_grace_time=600)
-    
+    scheduler.add_job(review_queue, IntervalTrigger(minutes=CONFIG["INTERVALS"]["QUEUE_PROCESSING_MINUTES"]), misfire_grace_time=300)
+    scheduler.add_job(fetch_and_post_weather,CronTrigger(hour=22, minute=0, second=0, timezone="UTC"),misfire_grace_time=600)
+    scheduler.add_job(fetch_and_post_carbon_intensity,CronTrigger(hour=10, minute=0, second=0, timezone="UTC"),misfire_grace_time=600)
+
     loop = asyncio.get_event_loop()
     loop.create_task(run_discord())
     loop.create_task(heartbeat())
