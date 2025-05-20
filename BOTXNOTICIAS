@@ -56,8 +56,8 @@ CONFIG = {
         "MONTHLY_READS": 10000,
         "REQUESTS_PER_WINDOW": 180, # Mantener este valor, Tweepy lo usa internamente
         "RATE_LIMIT_WINDOW_SECONDS": 900,  # Mantener este valor (15 minutos)
-        "TWEETS_PER_DAY": 80, # Reducir el límite diario para no agotar el mensual rápido
-        "MONTHLY_POSTS_TOTAL": 1200,  # Reducir el límite mensual total (1500 es el máximo, mejor dejar margen)
+        "TWEETS_PER_DAY": 50, # Reducir el límite diario para no agotar el mensual rápido
+        "MONTHLY_POSTS_TOTAL": 1500  # Reducir el límite mensual total (1500 es el máximo, mejor dejar margen)
     },
     "INTERVALS": {
         "PROCESS_NEWS_MINUTES": 60,  # Procesar noticias de RSS/Discord cada hora (no usa API de X para leer)
@@ -67,7 +67,7 @@ CONFIG = {
         # Prueba con 1440 (24 horas) o incluso más si sigues teniendo problemas.
         "UPDATE_TWITTER_FEEDS_MINUTES": 2880, # Ejemplo: Cambiado de 720 a 1440 (24 horas)
         "HEARTBEAT_SECONDS": 300, # Mantener el heartbeat
-        "TWEET_COOLDOWN_SECONDS": 60,  # 45 minutos entre tweets (ayuda a espaciar publicaciones)
+        "TWEET_COOLDOWN_SECONDS": 600,  # 45 minutos entre tweets (ayuda a espaciar publicaciones)
         "DISCORD_MESSAGE_COOLDOWN_SECONDS": 10, # Mantener el cooldown de mensajes de Discord
         "DISCORD_PROCESSING_SECONDS": 30,  # Mantener el procesamiento frecuente de Discord
         # *** MODIFICACIÓN SUGERIDA 2: Aumentar este retardo ***
@@ -87,64 +87,14 @@ CONFIG = {
     "TWEET": {
         "MAX_LENGTH": 280,
     },
-    "WEATHER": {
-        "AEMET_TEXT_URL": "https://www.aemet.es/es/eltiempo/prediccion/espana",
-        "AEMET_CITY_URL": "https://www.aemet.es/es/eltiempo/prediccion/municipios",
-        "OUTPUT_PATH": "weather_map_fun.png",
-        "WEBSITE_URL": "https://www.aemet.es",
-        "BASE_MAP_URL": "https://freevectormaps.com/images/maps/spain-political-map.png"
-    },
-    "CITIES": [
-        {"name": "Madrid", "coords": (600, 400), "temp": None, "icon": None, "aemet_id": "madrid-id28079", "region": "centro"},
-        {"name": "Barcelona", "coords": (800, 300), "temp": None, "icon": None, "aemet_id": "barcelona-id08019", "region": "este"},
-        {"name": "Sevilla", "coords": (500, 550), "temp": None, "icon": None, "aemet_id": "sevilla-id41091", "region": "sur"},
-        {"name": "Valencia", "coords": (750, 400), "temp": None, "icon": None, "aemet_id": "valencia-id46250", "region": "este"},
-        {"name": "Bilbao", "coords": (600, 200), "temp": None, "icon": None, "aemet_id": "bilbao-bilbo-id48020", "region": "norte"},
-        {"name": "A Coruña", "coords": (400, 150), "temp": None, "icon": None, "aemet_id": "a-coruna-id15030", "region": "noroeste"},
-        {"name": "Málaga", "coords": (600, 600), "temp": None, "icon": None, "aemet_id": "malaga-id29067", "region": "sur"},
-        {"name": "Palma", "coords": (900, 400), "temp": None, "icon": None, "aemet_id": "palma-id07040", "region": "islas"},
-        {"name": "Las Palmas", "coords": (200, 700), "temp": None, "icon": None, "aemet_id": "las-palmas-de-gran-canaria-id35016", "region": "islas"}
-    ],
-    "FUN_EMOJIS": {
-        "despejado": "☀️",
-        "nubes": "☁️",
-        "lluvia": "🌧️",
-        "truenos": "⛈️",
-        "nieve": "❄️",
-        "niebla": "🌫️"
-    },
-    "EXTRA_EMOJIS": {
-        "despejado": "🌺",
-        "nubes": "🌸",
-        "lluvia": "💦",
-        "truenos": "⚡",
-        "nieve": "☃️",
-        "niebla": "🌙"
-    },
-    "FUN_MESSAGES": {
-        "despejado": ["¡Sol a tope! 🏖️", "¡Brilla! 🌟"],
-        "nubes": ["¡Nubes de paseo! 🚶", "¡Cielo tímido! 💤"],
-        "lluvia": ["¡Llueve risas! 😂", "¡A bailar! 💃"],
-        "truenos": ["¡Truenos rock! 🎸", "¡Cielo enfadado! 😱"],
-        "nieve": ["¡Nieve mágica! 🪄", "¡Frío épico! ☃️"],
-        "niebla": ["¡Escondite! 🙈", "¡Misterio! 🕵️"]
-    },
-    "TEXT_COLORS": {
-        "despejado": (255, 215, 0, 255),
-        "nubes": (135, 206, 235, 255),
-        "lluvia": (0, 191, 255, 255),
-        "truenos": (255, 69, 0, 255),
-        "nieve": (173, 216, 230, 255),
-        "niebla": (169, 169, 169, 255)
-    },
-    "ELECTRICITY_MAPS": {
-        "CARBON_INTENSITY_URL": "https://api.electricitymap.org/v3/carbon-intensity/latest",
-        "POWER_BREAKDOWN_URL": "https://api.electricitymap.org/v3/power-breakdown/latest",
-        "AUTH_TOKEN": "02wv9IMX1j6eGUciuKqw",
-        "ZONE": "ES",  # Zona para España
-        "WEBSITE_URL": "https://app.electricitymaps.com"
+    "STORAGE": {
+        "PERSISTENT_IMAGE_DIR": "persistent_images/",  # Imágenes permanentes
+        "TEMP_IMAGE_DIR": "temp_images/"              # Imágenes temporales
     }
 }
+# Asegurar que los directorios existan
+os.makedirs(CONFIG["STORAGE"]["PERSISTENT_IMAGE_DIR"], exist_ok=True)
+os.makedirs(CONFIG["STORAGE"]["TEMP_IMAGE_DIR"], exist_ok=True)
 
 # Configuración de logging
 handler = colorlog.StreamHandler(stream=sys.stdout)
@@ -193,6 +143,7 @@ duplicate_cache = TTLCache(maxsize=1000, ttl=3600)  # Cachear por 1 hora
 
 # Lista de fuentes RSS
 RSS_FEEDS = [
+    "https://store.epicgames.com/es-ES/news",
     "https://www.gameinformer.com/rss.xml",
     "https://www.engadget.com/gaming/rss.xml",
     "https://www.gamespot.com/feeds/news/",
@@ -226,11 +177,288 @@ TWITTER_ACCOUNTS = [
     "PlayStationES",
 ]
 
-# Palabras clave en inglés para puntuación y detección de noticias
 KEYWORDS_EN = {
-    "gaming": {"game": 0.8, "nintendo": 1.0, "playstation": 1.0, "xbox": 1.0, "pc": 0.9, "console": 0.9},
-    "tech": {"technology": 0.8, "apple": 1.0, "google": 1.0, "ai": 1.2, "hardware": 0.9, "software": 0.9},
-    "news_indicators": ["release", "update", "patch", "announcement", "news", "breaking", "rotation", "free", "available"]
+    "gaming": {
+        # Términos generales
+        "game": 0.8,
+        "games": 0.8,
+        "gaming": 0.9,
+        "video game": 0.8,
+        "gamer": 0.8,
+        "play": 0.7,
+        "player": 0.7,
+        "multiplayer": 0.8,
+        "singleplayer": 0.8,
+        # Plataformas y consolas
+        "nintendo": 1.0,
+        "playstation": 1.0,
+        "xbox": 1.0,
+        "pc": 0.9,
+        "console": 0.9,
+        "switch": 1.0,
+        "ps5": 1.0,
+        "xbox series": 1.0,
+        "steam": 0.9,
+        "epic": 0.9,
+        "origin": 0.8,
+        "battlenet": 0.8,
+        "uplay": 0.8,
+        "gamepass": 0.9,
+        "stadia": 0.8,
+        "luna": 0.8,
+        # Compañías y desarrolladores
+        "activision": 0.9,
+        "blizzard": 0.9,
+        "ea": 0.9,
+        "electronic arts": 0.9,
+        "ubisoft": 0.9,
+        "square enix": 0.9,
+        "bethesda": 0.9,
+        "rockstar": 0.9,
+        "cd projekt": 0.9,
+        "fromsoftware": 0.8,
+        "capcom": 0.8,
+        "sega": 0.8,
+        "konami": 0.8,
+        "bandai namco": 0.8,
+        # Franquicias y juegos populares
+        "gta": 1.0,
+        "grand theft auto": 1.0,
+        "call of duty": 1.0,
+        "fifa": 1.0,
+        "madden": 0.9,
+        "nba 2k": 0.9,
+        "assassin's creed": 1.0,
+        "zelda": 1.0,
+        "mario": 1.0,
+        "pokemon": 1.0,
+        "doom": 1.0,
+        "witcher": 1.0,
+        "cyberpunk": 1.0,
+        "elden ring": 1.0,
+        "final fantasy": 1.0,
+        "resident evil": 1.0,
+        "halo": 1.0,
+        "gears": 0.9,
+        "forza": 0.9,
+        "starfield": 0.9,
+        "baldur's gate": 1.0,
+        "diablo": 1.0,
+        "overwatch": 0.9,
+        "fortnite": 1.0,
+        "apex legends": 0.9,
+        "valorant": 0.9,
+        "league of legends": 1.0,
+        "dota": 0.9,
+        "smash bros": 1.0,
+        "street fighter": 0.9,
+        "tekken": 0.9,
+        "mortal kombat": 0.9,
+        "star citizen": 0.9,
+        "hello kitty": 0.8,
+        "infinity nikki": 0.9,
+        # Tecnologías y accesorios
+        "vr": 0.8,
+        "virtual reality": 0.8,
+        "ar": 0.8,
+        "augmented reality": 0.8,
+        "controller": 0.8,
+        "joycon": 0.8,
+        "headset": 0.8,
+        "motion control": 0.7,
+        "ray tracing": 0.8,
+        "dlss": 0.8,
+        "fsr": 0.8,
+        # Contenido y eventos
+        "dlc": 0.8,
+        "expansion": 0.8,
+        "mod": 0.7,
+        "mods": 0.7,
+        "esports": 0.8,
+        "tournament": 0.8,
+        "stream": 0.7,
+        "streaming": 0.7,
+        "twitch": 0.8,
+        "youtube gaming": 0.8,
+        # Géneros y mecánicas
+        "rpg": 0.8,
+        "fps": 0.8,
+        "shooter": 0.8,
+        "battle royale": 0.8,
+        "moba": 0.8,
+        "strategy": 0.8,
+        "simulator": 0.8,
+        "puzzle": 0.7,
+        "adventure": 0.7,
+        "open world": 0.8
+    },
+    "tech": {
+        # Términos generales
+        "technology": 0.8,
+        "tech": 0.8,
+        "innovation": 0.7,
+        "digital": 0.7,
+        "device": 0.7,
+        "gadget": 0.7,
+        # Compañías
+        "apple": 1.0,
+        "google": 1.0,
+        "microsoft": 1.0,
+        "amazon": 1.0,
+        "meta": 1.0,
+        "tesla": 1.0,
+        "intel": 0.9,
+        "amd": 0.9,
+        "nvidia": 0.9,
+        "qualcomm": 0.8,
+        "samsung": 0.9,
+        "sony": 0.9,
+        "dell": 0.9,
+        "hp": 0.8,
+        "lenovo": 0.8,
+        "asus": 0.8,
+        "acer": 0.8,
+        # Tecnologías
+        "ai": 1.2,
+        "artificial intelligence": 1.2,
+        "machine learning": 1.0,
+        "deep learning": 1.0,
+        "neural network": 0.9,
+        "npu": 0.9,
+        "gpu": 0.9,
+        "cpu": 0.9,
+        "hardware": 0.9,
+        "software": 0.9,
+        "cloud": 0.9,
+        "cloud computing": 0.9,
+        "cybersecurity": 0.9,
+        "encryption": 0.8,
+        "blockchain": 0.8,
+        "crypto": 0.8,
+        "cryptocurrency": 0.8,
+        "nft": 0.8,
+        "quantum": 0.8,
+        "quantum computing": 0.8,
+        "5g": 0.9,
+        "6g": 0.8,
+        "wifi": 0.8,
+        "iot": 0.8,
+        "internet of things": 0.8,
+        "robotics": 0.8,
+        "drone": 0.8,
+        "autonomous": 0.8,
+        "self-driving": 0.8,
+        "ar": 0.8,
+        "vr": 0.8,
+        "metaverse": 0.8,
+        # Productos y categorías
+        "smartphone": 0.9,
+        "tablet": 0.8,
+        "laptop": 0.9,
+        "desktop": 0.8,
+        "monitor": 0.8,
+        "ssd": 0.8,
+        "ram": 0.8,
+        "processor": 0.8,
+        "chip": 0.8,
+        "semiconductor": 0.8,
+        "battery": 0.8,
+        "wearable": 0.8,
+        "smartwatch": 0.8,
+        "earbuds": 0.8,
+        # Negocios y tendencias
+        "startup": 0.8,
+        "venture": 0.7,
+        "funding": 0.7,
+        "ipo": 0.7,
+        "acquisition": 0.8,
+        "merger": 0.8
+    },
+    "news_indicators": [
+        # Anuncios y lanzamientos
+        "release",
+        "launch",
+        "debut",
+        "unveil",
+        "reveal",
+        "announcement",
+        "announce",
+        "introduced",
+        "rolled out",
+        "shipped",
+        "available",
+        "preorder",
+        "order",
+        "sale",
+        "drop",
+        # Actualizaciones
+        "update",
+        "patch",
+        "upgrade",
+        "fix",
+        "hotfix",
+        "overhaul",
+        "refresh",
+        "new version",
+        # Eventos
+        "event",
+        "showcase",
+        "conference",
+        "stream",
+        "livestream",
+        "broadcast",
+        "expo",
+        "convention",
+        "direct",
+        "state of play",
+        "e3",
+        "gamescom",
+        "blizzcon",
+        # Noticias generales
+        "news",
+        "breaking",
+        "report",
+        "leak",
+        "rumor",
+        "speculation",
+        "confirmed",
+        "official",
+        "statement",
+        "notice",
+        # Promociones y exclusivas
+        "free",
+        "deal",
+        "discount",
+        "sale",
+        "bundle",
+        "exclusive",
+        "limited",
+        "special",
+        "promo",
+        "offer",
+        # Pruebas y desarrollo
+        "beta",
+        "alpha",
+        "demo",
+        "trial",
+        "test",
+        "preview",
+        "early access",
+        # Cambios y ajustes
+        "rotation",
+        "change",
+        "tweak",
+        "balance",
+        "nerf",
+        "buff",
+        # Otros
+        "delay",
+        "postponed",
+        "canceled",
+        "shutdown",
+        "end",
+        "retired"
+    ]
 }
 
 # Estructuras de datos
@@ -608,21 +836,14 @@ async def on_ready():
 
 @discord_bot.event
 async def on_message(message):
-    """
-    Procesa los mensajes de Discord para identificar y añadir noticias.
-    Modificada para usar la función asíncrona is_duplicate y await save_bot_state.
-    """
     global last_message_time, bot_status, discord_news
     bot_status["last_task"] = f"Procesando mensaje de Discord (canal {message.channel.id})"
 
     try:
-        if message.author == discord_bot.user:
+        if message.author == discord_bot.user or message.channel.id not in [DISCORD_CHANNEL_1, DISCORD_CHANNEL_2]:
             return
 
         await discord_bot.process_commands(message)
-
-        if message.channel.id not in [DISCORD_CHANNEL_1, DISCORD_CHANNEL_2]:
-            return
 
         current_time = time.time()
         if current_time - last_message_time < CONFIG["INTERVALS"]["DISCORD_MESSAGE_COOLDOWN_SECONDS"]:
@@ -634,10 +855,9 @@ async def on_message(message):
 
         urls = re.findall(
             r'http[s]?://(?:[a-zA-Z]|[0-9]|[$-_@.&+]|[!*\\(\\),]|(?:%[0-9a-fA-F][0-9a-fA-F]))+',
-            message.content
+            message.content or ""
         )
 
-        # Procesar embeds
         if message.embeds:
             for embed in message.embeds:
                 title = embed.title or "Sin título"
@@ -647,23 +867,15 @@ async def on_message(message):
                 if not url and embed.description:
                     embed_urls = re.findall(
                         r'http[s]?://(?:[a-zA-Z]|[0-9]|[$-_@.&+]|[!*\\(\\),]|(?:%[0-9a-fA-F][0-9a-fA-F]))+',
-                        embed.description
+                        embed.description or ""
                     )
-                    url = embed_urls[0] if embed_urls else None
+                    url = embed_urls[0] if embed_urls else f"discord://{message.channel.id}/{message.id}"
 
-                if not url:
-                    url = f"discord://{message.channel.id}/{message.id}"
-
-                # Usar la función asíncrona is_duplicate
                 if await is_duplicate(title, summary, url, source):
                     logging.info(f"Duplicado detectado en embed: {title[:50]}")
                     continue
 
                 image_url = embed.image.url if embed.image else None
-                # La validación de imagen se puede hacer más tarde si es necesario para publicación,
-                # no es estrictamente necesario bloquear aquí para cada mensaje de Discord.
-
-
                 news_hash = hashlib.sha256((title + summary + url + source).encode()).hexdigest()
                 discord_news[message.channel.id].append({
                     "title": title,
@@ -676,20 +888,17 @@ async def on_message(message):
                     "is_discord": True
                 })
                 logging.info(f"Noticia añadida desde {source}: {title[:50]} - {url}")
-        
-        # Procesar URLs en texto plano
+
         elif urls:
-            content = " ".join(message.content.lower().split())
+            content = " ".join((message.content or "").lower().split())
             title = message.content[:100] or "Mensaje con enlace"
-            summary = message.content
+            summary = message.content or ""
 
             for url in urls:
-                # Usar la función asíncrona is_duplicate
                 if await is_duplicate(title, summary, url, source):
                     logging.info(f"Duplicado detectado en URL: {title[:50]}")
                     continue
 
-                # Validación de URL básica asíncrona
                 async with aiohttp.ClientSession() as session:
                     try:
                         async with session.head(url, timeout=aiohttp.ClientTimeout(total=5)) as response:
@@ -701,8 +910,6 @@ async def on_message(message):
                         continue
 
                 news_hash = hashlib.sha256((title + summary + url + source).encode()).hexdigest()
-                # No hay image_url evidente en texto plano
-                image_url = None
                 discord_news[message.channel.id].append({
                     "title": title,
                     "link": url,
@@ -710,24 +917,21 @@ async def on_message(message):
                     "source": source,
                     "date": datetime.now(),
                     "hash": news_hash,
-                    "image_url": image_url,
+                    "image_url": None,
                     "is_discord": True
                 })
                 logging.info(f"Noticia añadida desde {source} (URL): {title[:50]} - {url}")
 
-        # Procesar mensajes que contienen palabras clave indicadoras de noticias sin URL ni embed
-        elif any(keyword.lower() in message.content.lower() for keyword in KEYWORDS_EN["news_indicators"]):
-            title = message.content[:100]
-            summary = message.content
+        elif any(keyword.lower() in (message.content or "").lower() for keyword in KEYWORDS_EN["news_indicators"]):
+            title = (message.content or "")[:100]
+            summary = message.content or ""
             url = f"discord://{message.channel.id}/{message.id}"
 
-            # Usar la función asíncrona is_duplicate
             if await is_duplicate(title, summary, url, source):
                 logging.info(f"Duplicado detectado en texto plano: {title[:50]}")
                 return
 
             news_hash = hashlib.sha256((title + summary + url + source).encode()).hexdigest()
-            # Obtener image_url de adjuntos si existen
             image_url = message.attachments[0].url if message.attachments else None
             discord_news[message.channel.id].append({
                 "title": title,
@@ -744,7 +948,7 @@ async def on_message(message):
     except Exception as e:
         logging.error(f"Error procesando mensaje de Discord (canal {message.channel.id}): {e}", exc_info=True)
         bot_status["errors"] += 1
-        await save_bot_state() # Usar la función asíncrona para guardar estado
+        await save_bot_state()
 
 @discord_bot.command(name="noticias")
 async def fetch_news(ctx, number: int):
@@ -1035,7 +1239,7 @@ async def check_api_rate_limit(response_headers=None, category="read", endpoint=
     if exception and isinstance(exception, tweepy.TooManyRequests):
         if category.startswith("write"):
             # Suponer límite diario (50 tweets/día en plan gratuito) si no hay más info
-            wait_time = 86400  # 24 horas
+            wait_time = 10800  # 24 horas
             logging.warning(f"Posible límite diario alcanzado para {category}. Esperando {wait_time}s por defecto.")
         else:
             wait_time = 900  # 15 minutos para otros límites
@@ -1093,10 +1297,6 @@ async def make_twitter_request(func, *args, category="read", semaphore=None, rat
                 await asyncio.sleep(2 ** attempt)
                 
 async def generate_rss_feed(username: str, num_tweets: int = 5) -> str | None:
-    """
-    Genera un feed RSS para un usuario de Twitter/X.
-    Utiliza make_twitter_request para manejar límites de API.
-    """
     global bot_status
     bot_status["last_task"] = f"Generando feed RSS para @{username}"
     logging.debug(f"Intentando generar feed RSS para @{username}")
@@ -1104,46 +1304,32 @@ async def generate_rss_feed(username: str, num_tweets: int = 5) -> str | None:
     category = "read"
     current_time_ts = time.time()
 
-    # Verificar si las lecturas están pausadas antes de intentar generar el feed
     if current_time_ts < bot_status["twitter_wait_until"].get(category, 0):
-        logging.warning(f"Lecturas de Twitter/X pausadas hasta {datetime.fromtimestamp(bot_status['twitter_wait_until'][category]).strftime('%Y-%m-%d %H:%M:%S')}. Omitiendo generación de feed para @{username}")
+        logging.warning(f"Lecturas de Twitter/X pausadas hasta {datetime.fromtimestamp(bot_status['twitter_wait_until'][category]).strftime('%Y-%m-%d %H:%M:%S')}")
         return None
 
-    # make_twitter_request ya maneja el límite mensual y por ventana,
-    # así que no necesitamos verificaciones explícitas aquí, solo confiar en él.
-
     try:
-        # Obtener ID de usuario (usando caché y make_twitter_request)
         if username in user_id_cache:
             user_id = user_id_cache[username]
-            logging.debug(f"Usuario @{username} encontrado en caché con ID: {user_id}")
         else:
-            logging.debug(f"Buscando ID de usuario para @{username} via API.")
-            user_response = await make_twitter_request(
-                twitter_client_en.get_user,
-                username=username,
-                category=category
-            )
+            user_response = await make_twitter_request(twitter_client_en.get_user, username=username, category=category)
             if not user_response or not user_response.data:
-                logging.warning(f"No se encontró el usuario @{username} o error al obtenerlo.")
+                logging.warning(f"No se encontró el usuario @{username}")
                 return None
             user_id = user_response.data.id
             user_id_cache[username] = user_id
-            logging.debug(f"ID de usuario para @{username} obtenido: {user_id}")
-            save_bot_state_sync(cursor, conn) # Guardar user_id_cache si es necesario persistirlo
+            save_bot_state_sync(cursor, conn)
 
-        # Obtener tweets del usuario (usando make_twitter_request)
-        logging.debug(f"Obteniendo tweets para el usuario {user_id} (@{username}).")
         tweets_response = await make_twitter_request(
             twitter_client_en.get_users_tweets,
             id=user_id,
             max_results=num_tweets,
-            tweet_fields=["created_at"], # Solicitar solo los campos necesarios
+            tweet_fields=["created_at"],
             category=category
         )
 
         if not tweets_response or not tweets_response.data:
-            logging.info(f"No se encontraron tweets recientes para @{username} o error al obtenerlos.")
+            logging.info(f"No se encontraron tweets recientes para @{username}")
             return None
 
         fg = FeedGenerator()
@@ -1156,17 +1342,15 @@ async def generate_rss_feed(username: str, num_tweets: int = 5) -> str | None:
             fe.title(tweet.text[:100] + "..." if len(tweet.text) > 100 else tweet.text)
             fe.link(href=f"https://x.com/{username}/status/{tweet.id}")
             fe.description(tweet.text)
-            # Asegurarse de que created_at es un objeto datetime antes de formatear
             if isinstance(tweet.created_at, datetime):
-                 fe.pubDate(tweet.created_at.isoformat())
+                fe.pubDate(tweet.created_at.isoformat())
             else:
-                 logging.warning(f"Formato de fecha inesperado para tweet {tweet.id}: {tweet.created_at}")
-                 fe.pubDate(datetime.now().isoformat()) # Usar fecha actual como fallback
-
+                logging.warning(f"Formato de fecha inesperado para tweet {tweet.id}: {tweet.created_at}")
+                fe.pubDate(datetime.now().isoformat())
 
         rss_file = os.path.join(CONFIG["PATHS"]["RSS_CACHE_DIR"], f"{username}.rss")
         fg.rss_file(rss_file)
-        logging.info(f"Feed RSS generado exitosamente para @{username}: {rss_file}")
+        logging.info(f"Feed RSS generado para @{username}: {rss_file}")
         return rss_file
 
     except Exception as e:
@@ -1628,19 +1812,103 @@ async def score_news(entry, trends):
         loop = asyncio.get_running_loop()
         score = await loop.run_in_executor(None, partial(run_bert, inputs))
 
+        # Intentar recuperar imagen si no existe
+        image_score = 0.0
+        if not entry.get("image_url"):
+            async with aiohttp.ClientSession() as session:
+                try:
+                    image_url = await get_image_from_url(entry.get("link", ""), session)
+                    if image_url:
+                        entry["image_url"] = image_url
+                        image_score = 10.0  # Puntuación adicional por imagen
+                        logging.info(f"Imagen recuperada para noticia: {text[:50]} - {image_url}")
+                    else:
+                        logging.debug(f"No se encontró imagen para noticia: {text[:50]}")
+                except Exception as e:
+                    logging.warning(f"Error al recuperar imagen para noticia {text[:50]}: {e}")
+        
         # Ajustar con tendencias
         trend_score = 0.0
         for trend in trends:
             if trend.lower() in text_lower:
                 trend_score += 20.0  # Aumentar puntaje en escala 0-100
-        final_score = min(score * 100 + trend_score, 100.0)  # Escala 0-100
 
-        logging.debug(f"Noticia puntuada: {text} con score {final_score} (base: {score*100}, tendencias: {trend_score})")
+        # Calcular puntuación final
+        final_score = min((score * 100) + trend_score + image_score, 100.0)  # Escala 0-100
+
+        logging.debug(f"Noticia puntuada: {text} con score {final_score} (base: {score*100}, tendencias: {trend_score}, imagen: {image_score})")
         return final_score
 
     except Exception as e:
         logging.error(f"Error en score_news: {e}", exc_info=True)
         return 0.0
+    
+# Directorio para almacenar imágenes
+IMAGE_DIR = "images"
+os.makedirs(IMAGE_DIR, exist_ok=True)
+
+async def get_and_store_image(session: aiohttp.ClientSession, entry: dict) -> str | None:
+    """
+    Obtiene una imagen para la noticia y la guarda localmente.
+    
+    Args:
+        session: Sesión de aiohttp para solicitudes HTTP.
+        entry: Diccionario con datos de la noticia (url, title, summary, hash).
+    
+    Returns:
+        Ruta local de la imagen o None si falla.
+    """
+    # Intentar obtener imagen desde la URL de la noticia
+    image_url = await get_image_from_url(session, entry["link"])
+    if not image_url:
+        # Si no hay imagen en la URL, buscar con título y resumen
+        search_query = entry.get('title', '') + " " + entry.get('summary', '')
+        image_url = await get_image_from_search(session, search_query)
+    
+    if image_url:
+        # Descargar la imagen
+        image_data = await download_image(session, image_url)
+        if image_data:
+            # Usar el hash de la noticia como nombre del archivo
+            news_hash = entry["hash"]
+            image_path = os.path.join(IMAGE_DIR, f"{news_hash}.jpg")
+            # Guardar la imagen localmente
+            async with aiofiles.open(image_path, "wb") as f:
+                await f.write(image_data)
+            logging.info(f"Imagen guardada en: {image_path}")
+            return image_path
+    logging.warning(f"No se pudo obtener imagen para {entry['title'][:50]}")
+    return None
+
+async def process_queued_news():
+    """
+    Procesa noticias encoladas sin imagen, obtiene imágenes y las almacena.
+    """
+    # Consulta noticias sin imagen en la BD
+    cursor.execute("SELECT id, title, summary, url, news_hash FROM cola_publicacion WHERE image_data IS NULL")
+    queued_items = await run_db_sync(cursor.fetchall)
+    
+    async with aiohttp.ClientSession() as session:
+        for item in queued_items:
+            entry = {
+                "title": item["title"],
+                "summary": item["summary"],
+                "link": item["url"],
+                "hash": item["news_hash"]
+            }
+            # Obtener y guardar la imagen
+            image_path = await get_and_store_image(session, entry)
+            if image_path:
+                # Actualizar la BD con la ruta de la imagen
+                await run_db_sync(
+                    cursor.execute,
+                    "UPDATE cola_publicacion SET image_data = ? WHERE id = ?",
+                    (image_path, item["id"])
+                )
+                await run_db_sync(conn.commit)
+                logging.info(f"BD actualizada para {entry['title'][:50]} con {image_path}")
+            else:
+                logging.warning(f"Sin imagen para {entry['title'][:50]}, se reintentará después")
 
 async def optimize_image(image_data: bytes) -> bytes | None:
     """
@@ -1748,33 +2016,37 @@ def get_summary_sentences(summary: str, max_chars: int) -> str:
     return " ".join(selected_sentences).strip()
 
 async def generate_detailed_tweet(title: str, summary: str, url: str, trends: list[str], language: str) -> str:
-    """
-    Genera un tweet de máxima calidad usando análisis semántico avanzado, ganchos ultra atractivos,
-    contenido optimizado y hashtags hiper relevantes, inspirado en @IGN y @GameSpot, sin costo alguno.
-    """
     short_url = await shorten_url(url)
-    max_content_length = CONFIG["TWEET"]["MAX_LENGTH"] - len(short_url) - 30  # Reservar espacio para gancho, hashtags, emojis
+    max_content_length = CONFIG["TWEET"]["MAX_LENGTH"] - len(short_url) - 40
 
-    # Análisis semántico: clasificar tipo de noticia, tono y extraer entidades
+    # Análisis semántico
     title_lower = title.lower()
     summary_lower = summary.lower()
     news_type = "default"
     emoji = "🎮"
     tone = "enthusiastic"
-    for pattern, n_type, n_emoji, n_tone in [
-        ("release|launch|available|out now", "release", "🎮", "enthusiastic"),
-        ("update|patch|fix|improvement", "update", "🔧", "informative"),
-        ("announcement|reveal|trailer|teaser", "announce", "🚨", "urgent"),
-        ("free|deal|sale|discount|offer", "deal", "💸", "promotional"),
-        ("break|urgent|alert|emergency", "urgent", "🔥", "urgent")
-    ]:
-        if any(keyword in title_lower or keyword in summary_lower for keyword in pattern.split("|")):
-            news_type = n_type
-            emoji = n_emoji
-            tone = n_tone
-            break
+    if any(kw in title_lower or kw in summary_lower for kw in ["release", "launch", "available", "out now"]):
+        news_type = "release"
+        emoji = "🎮"
+        tone = "enthusiastic"
+    elif any(kw in title_lower or kw in summary_lower for kw in ["update", "patch", "fix", "improvement"]):
+        news_type = "update"
+        emoji = "🔧"
+        tone = "informative"
+    elif any(kw in title_lower or kw in summary_lower for kw in ["announcement", "reveal", "trailer", "teaser"]):
+        news_type = "announce"
+        emoji = "🚨"
+        tone = "urgent"
+    elif any(kw in title_lower or kw in summary_lower for kw in ["free", "deal", "sale", "discount", "offer"]):
+        news_type = "deal"
+        emoji = "💸"
+        tone = "promotional"
+    elif any(kw in title_lower or kw in summary_lower for kw in ["break", "urgent", "alert", "emergency"]):
+        news_type = "urgent"
+        emoji = "🔥"
+        tone = "urgent"
 
-    # Extraer entidades clave (juegos, plataformas, desarrolladores)
+    # Extracción de entidades
     entities = []
     entity_patterns = [
         (r"\b(playstation|ps[45])\b", "PlayStation"),
@@ -1784,120 +2056,140 @@ async def generate_detailed_tweet(title: str, summary: str, url: str, trends: li
         (r"\b(elden ring|cyberpunk 2077|call of duty|fortnite|god of war|zelda|halo)\b", lambda m: m.group(0).title()),
         (r"\b(fromsoftware|ubisoft|activision|ea sports|square enix)\b", lambda m: m.group(0).title())
     ]
-    for pattern, entity_name in entity_patterns:
-        for text in [title_lower, summary_lower]:
+    for text in [title_lower, summary_lower]:
+        for pattern, entity_name in entity_patterns:
             matches = re.findall(pattern, text, re.IGNORECASE)
             for match in matches:
                 entities.append(entity_name(match) if callable(entity_name) else entity_name)
-    entities = list(dict.fromkeys(entities))[:2]  # Limitar a 2 entidades únicas
+    entities = list(dict.fromkeys(entities))[:2]
 
-    # Generar gancho dinámico basado en tipo, tono y entidades
+    # Generación de gancho
     hooks_en = {
         "release": {
-            "enthusiastic": lambda e: f"{emoji} {e[0] if e else 'Epic game'} just dropped! Dive in!",
-            "default": lambda e: f"{emoji} {e[0] if e else 'New title'} hits the scene!"
+            "enthusiastic": [
+                "🎮 {entity} just dropped! Dive in!",
+                "🚀 Epic launch for {entity}!",
+                "🕹️ {entity} is out now! Ready to play?"
+            ],
+            "default": ["🎮 {entity} hits the scene."]
         },
         "update": {
-            "informative": lambda e: f"{emoji} {e[0] if e else 'Game'} gets a fresh update! Details!",
-            "default": lambda e: f"{emoji} New patch for {e[0] if e else 'your fave'}!"
+            "informative": [
+                "🔧 {entity} gets a fresh update! Details inside.",
+                "🔧 New patch for {entity}! Check it out."
+            ],
+            "default": ["🔧 Update for {entity} is here."]
         },
         "announce": {
-            "urgent": lambda e: f"{emoji} Huge {e[0] if e else 'game'} reveal! Must-see!",
-            "default": lambda e: f"{emoji} {e[0] if e else 'Big news'} just announced!"
+            "urgent": [
+                "🚨 Huge {entity} reveal! Must-see!",
+                "🚨 Breaking: {entity} announcement!"
+            ],
+            "default": ["🚨 {entity} news just dropped!"]
         },
         "deal": {
-            "promotional": lambda e: f"{emoji} Steal {e[0] if e else 'games'} now! Hot deal!",
-            "default": lambda e: f"{emoji} Save big on {e[0] if e else 'top titles'}!"
+            "promotional": [
+                "💸 Steal {entity} now! Hot deal!",
+                "💸 Grab {entity} at a discount!"
+            ],
+            "default": ["💸 {entity} on sale! Don't miss out."]
         },
         "urgent": {
-            "urgent": lambda e: f"{emoji} Alert! {e[0] if e else 'Game'} news you need NOW!",
-            "default": lambda e: f"{emoji} Urgent {e[0] if e else 'gaming'} update!"
+            "urgent": [
+                "🔥 Alert! {entity} news you need NOW!",
+                "🔥 Urgent update for {entity}!"
+            ],
+            "default": ["🔥 Important {entity} news!"]
         },
         "default": {
-            "enthusiastic": lambda e: f"{emoji} {e[0] if e else 'Gaming'} news to hype you up!",
-            "default": lambda e: f"{emoji} Fresh scoop for {e[0] if e else 'gamers'}!"
+            "enthusiastic": ["🎮 {entity} news to hype you up!"],
+            "default": ["📰 Fresh scoop for {entity}!"]
         }
     }
     hooks_es = {
         "release": {
-            "enthusiastic": lambda e: f"{emoji} ¡{e[0] if e else 'Juego épico'} ya llegó! ¡Juega ya!",
-            "default": lambda e: f"{emoji} ¡{e[0] if e else 'Nuevo título'} aterriza hoy!"
+            "enthusiastic": [
+                "🎮 ¡{entity} ya está aquí! ¡A jugar!",
+                "🚀 ¡Lanzamiento épico de {entity}!",
+                "🕹️ ¡{entity} disponible ahora! ¿Listo?"
+            ],
+            "default": ["🎮 {entity} aterriza hoy."]
         },
         "update": {
-            "informative": lambda e: f"{emoji} ¡{e[0] if e else 'Juego'} actualizado! ¡Mira qué hay!",
-            "default": lambda e: f"{emoji} ¡Parche nuevo para {e[0] if e else 'tu favorito'}!"
+            "informative": [
+                "🔧 ¡{entity} actualizado! Mira qué hay.",
+                "🔧 Nuevo parche para {entity}!"
+            ],
+            "default": ["🔧 Actualización para {entity}."]
         },
         "announce": {
-            "urgent": lambda e: f"{emoji} ¡Bombazo! ¡{e[0] if e else 'Juego'} revelado!",
-            "default": lambda e: f"{emoji} ¡{e[0] if e else 'Gran noticia'} anunciada!"
+            "urgent": [
+                "🚨 ¡Bombazo! ¡{entity} revelado!",
+                "🚨 ¡Anuncio urgente de {entity}!"
+            ],
+            "default": ["🚨 ¡Gran noticia de {entity}!"]
         },
         "deal": {
-            "promotional": lambda e: f"{emoji} ¡Oferta! ¡Consigue {e[0] if e else 'juegos'} ya!",
-            "default": lambda e: f"{emoji} ¡Ahorra en {e[0] if e else 'títulos top'}!"
+            "promotional": [
+                "💸 ¡Oferta! ¡Consigue {entity} ya!",
+                "💸 ¡{entity} en rebaja! Aprovecha."
+            ],
+            "default": ["💸 {entity} en oferta. ¡No te lo pierdas!"]
         },
         "urgent": {
-            "urgent": lambda e: f"{emoji} ¡Alerta! ¡{e[0] if e else 'Noticia'} que debes saber!",
-            "default": lambda e: f"{emoji} ¡Urgente para {e[0] if e else 'gamers'}!"
+            "urgent": [
+                "🔥 ¡Alerta! ¡Noticia urgente de {entity}!",
+                "🔥 ¡Actualización urgente para {entity}!"
+            ],
+            "default": ["🔥 Noticia importante de {entity}."]
         },
         "default": {
-            "enthusiastic": lambda e: f"{emoji} ¡{e[0] if e else 'Gaming'} al rojo vivo!",
-            "default": lambda e: f"{emoji} ¡Lo último para {e[0] if e else 'gamers'}!"
+            "enthusiastic": ["🎮 ¡Noticia emocionante de {entity}!"],
+            "default": ["📰 Lo último de {entity}."]
         }
     }
-    hook_dict = hooks_en if language == "en" else hooks_es
-    hook = hook_dict[news_type].get(tone, hook_dict[news_type]["default"])(entities)
+    hook_dict = hooks_es if language == "es" else hooks_en
+    options = hook_dict.get(news_type, {}).get(tone, hook_dict[news_type]["default"])
+    hook = random.choice(options).format(entity=entities[0] if entities else "juego")
 
-    # Optimizar contenido: seleccionar la frase más impactante
-    content_source = title if len(title) < len(summary) and title else summary
-    if not content_source:
-        content_source = title or summary or "Check out this gaming news!"
-    sentences = re.split(r'[.!?]+', clean_text(content_source))
-    prioritized_sentences = []
+    # Selección de contenido
+    sentences = re.split(r'[.!?]+', clean_text(summary))
+    scored_sentences = []
     for sentence in sentences:
         sentence = sentence.strip()
         if not sentence:
             continue
-        score = len(sentence.split()) * 0.1  # Penalizar oraciones muy cortas
+        score = len(sentence.split()) * 0.1
         for entity in entities:
             if entity.lower() in sentence.lower():
                 score += 5
         for trend in trends:
-            if trend.lower() in sentence.lower() and len(trend) <= 15:
+            if trend.lower() in sentence.lower():
                 score += 3
-        prioritized_sentences.append((sentence, score))
-    prioritized_sentences.sort(key=lambda x: x[1], reverse=True)
-    content = prioritized_sentences[0][0] if prioritized_sentences else content_source
+        scored_sentences.append((sentence, score))
+    scored_sentences.sort(key=lambda x: x[1], reverse=True)
+    content = " ".join([s for s, _ in scored_sentences[:2]])[:max_content_length].strip()
 
-    # Traducir si es necesario y asegurar coherencia
+    # Traducción si es necesario
     if language == "es" and "twitter" not in url.lower():
         content = await translate_to_spanish(content)
-    content = content[:max_content_length - len(hook) - 10].strip()
-    if not content.endswith((".", "!", "?")):
-        content = content.rstrip(".,!?") + ("!" if tone in ["enthusiastic", "urgent", "promotional"] else ".")
 
-    # Generar hashtags hiper relevantes
-    hashtag_candidates = []
-    for entity in entities:
-        hashtag = re.sub(r"\s+", "", entity)
-        if len(hashtag) <= 15 and hashtag not in hashtag_candidates:
-            hashtag_candidates.append(hashtag)
+    # Generación de hashtags
+    hashtag_candidates = [re.sub(r"\s+", "", e) for e in entities if len(e) <= 15]
     for trend in trends:
-        trend_clean = re.sub(r"\s+", "", trend)
-        if (len(trend_clean) <= 15 and
-            any(kw in trend.lower() for kw in ["game", "gaming"] + [e.lower() for e in entities]) and
-            trend_clean not in hashtag_candidates):
-            hashtag_candidates.append(trend_clean)
-    if len(hashtag_candidates) < 2:
-        hashtag_candidates.extend([h for h in ["GamingNews", "GamersUnite", "GameOn"] if h not in hashtag_candidates])
-    hashtag_str = " " + " ".join(f"#{h}" for h in hashtag_candidates[:2])
+        clean_trend = re.sub(r"\s+", "", trend)
+        if len(clean_trend) <= 15 and clean_trend not in hashtag_candidates:
+            hashtag_candidates.append(clean_trend)
+    if not hashtag_candidates:
+        hashtag_candidates = ["GamingNews", "Videojuegos"] if language == "es" else ["GamingNews", "VideoGames"]
+    hashtags = " ".join(f"#{h}" for h in random.sample(hashtag_candidates, min(2, len(hashtag_candidates))))
 
-    # Construir el tweet
-    tweet = f"{hook} {content} {short_url}{hashtag_str}"
+    # Construcción del tweet
+    tweet = f"{hook} {content} {short_url} {hashtags}"
     if len(tweet) > CONFIG["TWEET"]["MAX_LENGTH"]:
-        content = content[:max_content_length - len(hook) - len(hashtag_str) - 15] + "..."
-        tweet = f"{hook} {content} {short_url}{hashtag_str}"
+        content = content[:max_content_length - len(hook) - len(hashtags) - 15] + "..."
+        tweet = f"{hook} {content} {short_url} {hashtags}"
 
-    logging.debug(f"Tweet generado ({language}, tipo: {news_type}, tono: {tone}, entidades: {entities}): {tweet}")
     return tweet
 
 import aiohttp
@@ -1925,371 +2217,6 @@ from tweepy.errors import TweepyException
 from bs4 import BeautifulSoup
 from PIL import Image, ImageDraw, ImageFont
 import io
-
-async def fetch_weather_data():
-    """
-    Obtiene datos meteorológicos de AEMET para las ciudades.
-    """
-    for city in CONFIG["CITIES"]:
-        try:
-            city_url = f"{CONFIG['WEATHER']['AEMET_CITY_URL']}/{city['aemet_id']}"
-            response = requests.get(city_url, timeout=10)
-            if response.status_code != 200:
-                continue
-            soup = BeautifulSoup(response.text, "html.parser")
-            
-            # Obtener temperaturas
-            temp_data = soup.find("div", class_="prediccion_diaria")
-            if temp_data:
-                min_temp = temp_data.find("span", class_="temp_min").text.strip() if temp_data.find("span", class_="temp_min") else "N/A"
-                max_temp = temp_data.find("span", class_="temp_max").text.strip() if temp_data.find("span", class_="temp_max") else "N/A"
-                city["temp"] = {"min": min_temp, "max": max_temp}
-            else:
-                city["temp"] = {"min": "N/A", "max": "N/A"}
-            
-            # Obtener estado del cielo
-            sky_state = soup.find("img", class_="icono_estado_cielo")["src"] if soup.find("img", class_="icono_estado_cielo") else ""
-            if "11" in sky_state:
-                city["icon"] = "despejado"
-            elif "16" in sky_state:
-                city["icon"] = "nubes"
-            elif "43" in sky_state:
-                city["icon"] = "lluvia"
-            elif "46" in sky_state:
-                city["icon"] = "truenos"
-            elif "67" in sky_state:
-                city["icon"] = "nieve"
-            elif "80" in sky_state:
-                city["icon"] = "niebla"
-            else:
-                city["icon"] = "nubes"  # Por defecto
-        except Exception as e:
-            logging.warning(f"Error al obtener datos de {city['name']}: {e}")
-            city["temp"] = {"min": "N/A", "max": "N/A"}
-            city["icon"] = "nubes"
-
-    # Descargar mapa base
-    try:
-        map_response = requests.get(CONFIG["WEATHER"]["BASE_MAP_URL"], stream=True, timeout=10)
-        if map_response.status_code == 200:
-            map_image = Image.open(io.BytesIO(map_response.content)).convert("RGBA")
-        else:
-            logging.error(f"Error {map_response.status_code} al descargar el mapa base.")
-            map_image = Image.new("RGBA", (1000, 600), (255, 255, 255, 255))
-            draw = ImageDraw.Draw(map_image)
-            draw.rectangle((100, 100, 900, 500), fill=(200, 200, 200, 255))
-    except Exception as e:
-        logging.error(f"Error al descargar el mapa base: {e}")
-        map_image = Image.new("RGBA", (1000, 600), (255, 255, 255, 255))
-        draw = ImageDraw.Draw(map_image)
-        draw.rectangle((100, 100, 900, 500), fill=(200, 200, 200, 255))
-
-    return map_image
-
-async def generate_weather_summary():
-    """
-    Genera un resumen general del tiempo basado en las condiciones predominantes.
-    """
-    regions = {
-        "norte": [],
-        "noroeste": [],
-        "centro": [],
-        "este": [],
-        "sur": [],
-        "islas": []
-    }
-    for city in CONFIG["CITIES"]:
-        regions[city["region"]].append(city["icon"])
-
-    summary = []
-    for region, conditions in regions.items():
-        if conditions:
-            most_common = Counter(conditions).most_common(1)[0][0]
-            if region == "norte" and most_common:
-                summary.append(f"truenos⛈️" if most_common == "truenos" else f"{most_common}☁️")
-            elif region == "sur" and most_common:
-                summary.append(f"sol☀️" if most_common == "despejado" else f"{most_common}🌧️")
-            elif region == "islas" and most_common:
-                summary.append(f"sol☀️" if most_common == "despejado" else f"{most_common}🌫️")
-
-    if len(summary) >= 2:
-        return f"¡Mañana {summary[0]} en sur & {summary[1]} en norte! 🌈"
-    elif summary:
-        return f"¡Mañana {summary[0]} en España! 🌈"
-    else:
-        return "¡Mañana tiempo loco en España! 🌈"
-
-async def create_weather_map(map_image):
-    """
-    Crea un mapa meteorológico colorido y lleno de emojis.
-    """
-    # Crear lienzo con fondo degradado amarillo-rosa
-    canvas = Image.new("RGBA", (1200, 800), (255, 204, 0, 255))
-    draw = ImageDraw.Draw(canvas)
-    for y in range(800):
-        r = 255
-        g = int(204 - (y / 800) * 100)
-        b = int((y / 800) * 150)
-        draw.line((0, y, 1200, y), fill=(r, g, b, 255))
-
-    # Añadir efecto de brillo al mapa base
-    map_image = map_image.resize((1000, 600), Image.Resampling.LANCZOS)
-    canvas.paste(map_image, (100, 150), map_image)
-    draw.rectangle((95, 145, 1105, 755), outline=(255, 0, 255, 255), width=5)
-
-    # Añadir título con emojis
-    tomorrow = datetime.now() + timedelta(days=1)
-    day_name = tomorrow.strftime("%A").upper()
-    date_str = tomorrow.strftime("%d de %B").lower()
-    title = f"¡Tiempo Loco 🎉 {day_name} {date_str}! 🌈"
-    try:
-        font = ImageFont.truetype("arialbd.ttf", 40)
-        small_font = ImageFont.truetype("arial.ttf", 15)
-        emoji_font = ImageFont.truetype("seguiemj.ttf", 40)
-    except:
-        font = small_font = emoji_font = ImageFont.load_default()
-    draw.text((52, 52), title, fill=(0, 0, 0, 255), font=font)
-    draw.text((50, 50), title, fill=(255, 0, 0, 255), font=font)
-
-    # Añadir estrellas y emojis decorativos
-    for _ in range(5):
-        x, y = random.randint(50, 1150), random.randint(50, 100)
-        draw.text((x-5, y-5), "⭐", font=emoji_font, fill=(255, 255, 0, 255))
-
-    # Añadir emojis, temperaturas y mensajes
-    try:
-        temp_font = ImageFont.truetype("arial.ttf", 25)
-    except:
-        temp_font = ImageFont.load_default()
-    for city in CONFIG["CITIES"]:
-        x, y = city["coords"]
-        emoji = CONFIG["FUN_EMOJIS"].get(city["icon"], "☁️")
-        extra_emoji = CONFIG["EXTRA_EMOJIS"].get(city["icon"], "🌸")
-        draw.text((x - 20, y - 60), emoji, font=emoji_font, fill=(0, 0, 0, 255))
-        draw.text((x + 20, y - 60), extra_emoji, font=emoji_font, fill=(0, 0, 0, 255))
-        
-        temp_text = f"{city['name']}: {city['temp']['min']}° / {city['temp']['max']}°"
-        color = CONFIG["TEXT_COLORS"].get(city["icon"], (0, 0, 0, 255))
-        draw.rectangle([x-5, y+5, x+150, y+40], fill=(255, 255, 255, 200))
-        draw.text((x, y+10), temp_text, fill=color, font=temp_font)
-
-        # Añadir mensaje gracioso pequeño
-        message = random.choice(CONFIG["FUN_MESSAGES"].get(city["icon"], ["¡Qué tiempo tan loco!"]))
-        draw.text((x, y+50), message, fill=(0, 0, 0, 255), font=small_font)
-
-    # Añadir personaje con más emojis
-    draw.ellipse((1050, 650, 1150, 750), fill=(255, 255, 0, 255))
-    draw.ellipse((1070, 670, 1080, 680), fill=(0, 0, 0, 255))
-    draw.ellipse((1120, 670, 1130, 680), fill=(0, 0, 0, 255))
-    draw.line((1080, 675, 1120, 675), fill=(0, 0, 0, 255))
-    draw.arc((1080, 700, 1120, 720), 0, 180, fill=(0, 0, 0, 255))
-    draw.polygon([(1100, 650), (1080, 620), (1120, 620)], fill=(255, 0, 0, 255))
-    for i in range(8):
-        angle = i * 45
-        x1 = 1100 + 70 * (1 if i % 2 == 0 else 0.7) * (1 if i < 4 else -1)
-        y1 = 700 + 70 * (1 if i % 2 == 0 else 0.7) * (1 if i in [2, 3, 6, 7] else -1)
-        draw.line((1100, 700, x1, y1), fill=(255, 255, 0, 255), width=3)
-    draw.text((1060, 620), "🌟", font=emoji_font, fill=(255, 255, 0, 255))
-    draw.text((1140, 620), "🎵", font=emoji_font, fill=(255, 255, 0, 255))
-
-    # Guardar la imagen
-    canvas.save(CONFIG["WEATHER"]["OUTPUT_PATH"], "PNG")
-    logging.info(f"Mapa guardado en {CONFIG['WEATHER']['OUTPUT_PATH']}")
-
-async def fetch_and_post_weather():
-    """
-    Genera y publica el pronóstico con más emojis en un solo tweet.
-    """
-    logging.info("Generando pronóstico divertido...")
-    map_image = await fetch_weather_data()
-    if map_image:
-        await create_weather_map(map_image)
-        summary = await generate_weather_summary()
-        # Añadir más emojis al tweet
-        message = f"{summary} ☀️🌧️⛈️❄️🌫️🎉 #TiempoLoco {CONFIG['WEATHER']['WEBSITE_URL']}"
-        # Asegurarse de que el tweet no exceda 280 caracteres
-        if len(message) > 280:
-            message = message[:270] + "..."
-        try:
-            with open(CONFIG["WEATHER"]["OUTPUT_PATH"], "rb") as image_file:
-                media = app.media_upload(filename="weather_map_fun.png", file=image_file)
-            app.update_status(status=message, media_ids=[media.media_id])
-            logging.info(f"Tweet publicado: {message}")
-        except TweepyException as e:
-            logging.error(f"Error al publicar tweet: {e}")
-        
-async def fetch_and_post_carbon_intensity():
-    """
-    Consulta la API de Electricity Maps para España (intensidad de carbono y desglose de fuentes de energía)
-    usando requests, y publica un tweet diario en español con un comentario sobre baja inercia si la generación
-    solar es alta, respetando los límites del plan gratuito de Twitter (50 tweets/día, 1500/mes).
-    """
-    global bot_status
-    logging.info("Iniciando consulta a Electricity Maps para tweet de intensidad de carbono y fuentes en España")
-
-    # Verificar si ya se publicó hoy
-    last_carbon_tweet = bot_status.get("last_carbon_tweet", 0)
-    current_day = datetime.utcnow().date().isoformat()
-    if last_carbon_tweet == current_day:
-        logging.info("Tweet de carbono ya publicado hoy. Omitiendo.")
-        return
-
-    # Verificar límites de Twitter
-    tweets_remaining = CONFIG["API_LIMITS"]["TWEETS_PER_DAY"] - bot_status["daily_tweets_total"]
-    monthly_remaining = CONFIG["API_LIMITS"]["MONTHLY_POSTS_TOTAL"] - (bot_status["monthly_posts_en"] + bot_status["monthly_posts_es"])
-    if tweets_remaining <= 0 or monthly_remaining <= 0:
-        logging.warning("Límite diario o mensual de Twitter alcanzado. No se publicará tweet de carbono.")
-        return
-
-    # Consultar intensidad de carbono
-    carbon_data = None
-    for attempt in range(2):
-        try:
-            response = await asyncio.to_thread(
-                requests.get,
-                CONFIG["ELECTRICITY_MAPS"]["CARBON_INTENSITY_URL"],
-                headers={"auth-token": CONFIG["ELECTRICITY_MAPS"]["AUTH_TOKEN"]},
-                params={"zone": CONFIG["ELECTRICITY_MAPS"]["ZONE"]}
-            )
-            if response.status_code == 200:
-                carbon_data = response.json()
-                logging.debug(f"Datos de intensidad de carbono: {carbon_data}")
-                break
-            elif response.status_code == 429:
-                logging.warning(f"Error 429 en carbon-intensity, intento {attempt + 1}/2. Esperando 30s.")
-                await asyncio.sleep(30)
-            else:
-                logging.error(f"Error {response.status_code} al consultar carbon-intensity: {response.text}")
-                return
-        except Exception as e:
-            logging.error(f"Error en consulta a carbon-intensity, intento {attempt + 1}/2: {e}")
-            if attempt == 1:
-                logging.error("Fallo tras 2 intentos en carbon-intensity.")
-                return
-            await asyncio.sleep(30)
-
-    # Consultar desglose de fuentes
-    power_data = None
-    for attempt in range(2):
-        try:
-            response = await asyncio.to_thread(
-                requests.get,
-                CONFIG["ELECTRICITY_MAPS"]["POWER_BREAKDOWN_URL"],
-                headers={"auth-token": CONFIG["ELECTRICITY_MAPS"]["AUTH_TOKEN"]},
-                params={"zone": CONFIG["ELECTRICITY_MAPS"]["ZONE"]}
-            )
-            if response.status_code == 200:
-                power_data = response.json()
-                logging.debug(f"Datos de power-breakdown: {power_data}")
-                break
-            elif response.status_code == 429:
-                logging.warning(f"Error 429 en power-breakdown, intento {attempt + 1}/2. Esperando 30s.")
-                await asyncio.sleep(30)
-            else:
-                logging.warning(f"Error {response.status_code} al consultar power-breakdown: {response.text}")
-                break
-        except Exception as e:
-            logging.warning(f"Error en consulta a power-breakdown, intento {attempt + 1}/2: {e}")
-            if attempt == 1:
-                logging.warning("Fallo tras 2 intentos en power-breakdown. Continuando con solo intensidad de carbono.")
-                break
-            await asyncio.sleep(30)
-
-    # Procesar datos de intensidad de carbono
-    carbon_intensity = None
-    if carbon_data:
-        try:
-            carbon_intensity = carbon_data.get("carbonIntensity", 0)
-            zone = carbon_data.get("zone", CONFIG["ELECTRICITY_MAPS"]["ZONE"])
-            if not carbon_intensity or not zone:
-                logging.error("Datos inválidos de carbon-intensity. No se publicará tweet.")
-                return
-        except Exception as e:
-            logging.error(f"Error procesando datos de carbon-intensity: {e}")
-            return
-
-    # Procesar datos de power-breakdown y detectar baja inercia
-    renewable_percentage = None
-    sources_text = ""
-    low_inertia_message = ""
-    SOLAR_THRESHOLD = 0.3  # Umbral para alta generación solar (30%)
-    if power_data:
-        try:
-            renewable_percentage = power_data.get("renewablePercentage", 0)
-            breakdown = power_data.get("powerConsumptionBreakdown", {})
-            sources = [
-                (key, value) for key, value in breakdown.items()
-                if value and key in ["solar", "wind", "hydro", "nuclear", "gas", "coal"]
-            ]
-            total = sum(value for _, value in sources)
-            if total > 0:
-                solar_mw = breakdown.get("solar", 0)
-                solar_percentage = solar_mw / total if total > 0 else 0
-                if solar_percentage >= SOLAR_THRESHOLD:
-                    low_inertia_message = "Alta generación solar reduce la inercia del sistema. ¡Necesitamos más almacenamiento!"
-                sources.sort(key=lambda x: x[1], reverse=True)
-                top_sources = sources[:3]
-                sources_text = ", ".join(
-                    f"{key} {round((value / total) * 100)}%" for key, value in top_sources
-                )
-                sources_text = f" ({sources_text})"
-        except Exception as e:
-            logging.warning(f"Error procesando datos de power-breakdown: {e}")
-            sources_text = ""
-            renewable_percentage = None
-            low_inertia_message = ""
-
-    # Generar tweet en español
-    short_url = await shorten_url(CONFIG["ELECTRICITY_MAPS"]["WEBSITE_URL"])
-    if carbon_intensity and renewable_percentage and sources_text:
-        message = (
-            f"🌍 Intensidad de carbono en España: {carbon_intensity} gCO2eq/kWh. "
-            f"⚡️ Energía: {renewable_percentage}% renovable{sources_text}. "
-            f"{low_inertia_message} ¡Por un futuro verde! {short_url} #Sostenibilidad #IntensidadDeCarbono"
-        ).strip()
-    elif carbon_intensity:
-        message = (
-            f"🌍 Intensidad de carbono en España: {carbon_intensity} gCO2eq/kWh. "
-            f"¡Energía más limpia para un futuro sostenible! ⚡️ {short_url} #Sostenibilidad #IntensidadDeCarbono"
-        )
-    else:
-        logging.error("No se pudieron obtener datos válidos. No se publicará tweet.")
-        return
-
-    # Ajustar longitud del tweet
-    if len(message) > CONFIG["TWEET"]["MAX_LENGTH"]:
-        if renewable_percentage and low_inertia_message:
-            message = (
-                f"🌍 Carbono en España: {carbon_intensity} gCO2eq/kWh. "
-                f"⚡️ {renewable_percentage}% renovable. Alta generación solar reduce la inercia. {short_url} #Sostenibilidad"
-            )
-        elif renewable_percentage:
-            message = (
-                f"🌍 Carbono en España: {carbon_intensity} gCO2eq/kWh. "
-                f"⚡️ {renewable_percentage}% renovable. ¡Vamos por lo verde! {short_url} #Sostenibilidad"
-            )
-        else:
-            message = (
-                f"🌍 Carbono en España: {carbon_intensity} gCO2eq/kWh. "
-                f"¡Vamos por lo verde! ⚡️ {short_url} #Sostenibilidad"
-            )
-
-    # Publicar tweet en español
-    try:
-        await make_twitter_request(
-            app.update_status,
-            status=message,
-            category="write_es",
-            endpoint="/statuses/update",
-            priority=1.0
-        )
-        bot_status["daily_tweets_total"] += 1
-        bot_status["monthly_posts_es"] += 1
-        bot_status["last_carbon_tweet"] = current_day
-        logging.info(f"Tweet de carbono publicado: {message[:50]}...")
-        await save_bot_state()
-    except Exception as e:
-        logging.error(f"Error publicando tweet de carbono: {e}")
 
 # 3. Actualizar función capture_map_screenshot
 def capture_map_screenshot(map_url, output_path):
@@ -2366,81 +2293,12 @@ def capture_map_screenshot(map_url, output_path):
 
     return False
 
-# 4. Actualizar función post_weather_map
-async def post_weather_map():
-    """
-    Publica un tweet con el mapa meteorológico capturado, respetando los límites de Twitter.
-    """
-    global bot_status
-    logging.info("Iniciando publicación de tweet con pronóstico del tiempo")
-
-    # Verificar si ya se publicó hoy
-    last_weather_tweet = bot_status.get("last_weather_tweet", 0)
-    current_day = datetime.utcnow().date().isoformat()
-    if last_weather_tweet == current_day:
-        logging.info("Tweet de pronóstico del tiempo ya publicado hoy. Omitiendo.")
-        return
-
-    # Verificar límites de Twitter
-    tweets_remaining = CONFIG["API_LIMITS"]["TWEETS_PER_DAY"] - bot_status["daily_tweets_total"]
-    monthly_remaining = CONFIG["API_LIMITS"]["MONTHLY_POSTS_TOTAL"] - (bot_status["monthly_posts_en"] + bot_status["monthly_posts_es"])
-    if tweets_remaining <= 0 or monthly_remaining <= 0:
-        logging.warning("Límite diario o mensual de Twitter alcanzado. No se publicará tweet de pronóstico.")
-        return
-
-    # Capturar mapa
-    loop = asyncio.get_event_loop()
-    success = await loop.run_in_executor(
-        None,
-        capture_map_screenshot,
-        CONFIG["WEATHER"]["MAP_URL"],
-        CONFIG["WEATHER"]["OUTPUT_PATH"]
-    )
-
-    if not success:
-        logging.error("No se pudo capturar el mapa meteorológico. No se publicará tweet.")
-        return
-
-    # Generar tweet en español
-    short_url = await shorten_url(CONFIG["WEATHER"]["WEBSITE_URL"])
-    message = (
-        f"☀️ Pronóstico del tiempo en España: ¡Mira el mapa de hoy! 🌦️ "
-        f"Prepárate para el día. {short_url} #Tiempo #Pronóstico"
-    )
-    if len(message) > CONFIG["TWEET"]["MAX_LENGTH"]:
-        message = (
-            f"☀️ Pronóstico en España: ¡Mapa de hoy! 🌦️ "
-            f"{short_url} #Tiempo"
-        )
-
-    # Publicar tweet con imagen
-    try:
-        # Subir imagen a Twitter
-        with open(CONFIG["WEATHER"]["OUTPUT_PATH"], "rb") as image_file:
-            media = app.media_upload(filename="weather_map.png", file=image_file)
-        # Publicar tweet con imagen
-        await make_twitter_request(
-            app.update_status,
-            status=message,
-            media_ids=[media.media_id],
-            category="write_es",
-            endpoint="/statuses/update",
-            priority=1.0
-        )
-        bot_status["daily_tweets_total"] += 1
-        bot_status["monthly_posts_es"] += 1
-        bot_status["last_weather_tweet"] = current_day
-        logging.info(f"Tweet de pronóstico publicado: {message[:50]}...")
-        await save_bot_state()
-    except Exception as e:
-        logging.error(f"Error publicando tweet de pronóstico: {e}")
-
 async def repost_tweet_from_url(tweet_url: str, summary: str, language: str = 'en') -> bool:
     global bot_status
     category = f"write_{language}"
     current_time = time.time()
     if current_time < bot_status["twitter_wait_until"].get(category, 0):
-        logging.warning(f"En período de espera para {category} hasta {datetime.fromtimestamp(bot_status['twitter_wait_until'][category]).strftime('%H:%M:%S')}")
+        logging.warning(f"En período de espera para {category}")
         return False
 
     try:
@@ -2448,7 +2306,7 @@ async def repost_tweet_from_url(tweet_url: str, summary: str, language: str = 'e
         if not tweet_match:
             logging.warning(f"URL no válida para republicación: {tweet_url}")
             return False
-        
+
         username = tweet_match.group(2)
         tweet_id = tweet_match.group(3)
         title = f"Tweet from @{username}"
@@ -2462,24 +2320,19 @@ async def repost_tweet_from_url(tweet_url: str, summary: str, language: str = 'e
         rate_limit_event = write_rate_limit_event_en if language == "en" else write_rate_limit_event_es
 
         if bot_status["monthly_posts_en"] + bot_status["monthly_posts_es"] >= CONFIG["API_LIMITS"]["MONTHLY_POSTS_TOTAL"] or bot_status[daily_key] >= CONFIG["API_LIMITS"]["TWEETS_PER_DAY"]:
-            logging.info(f"Límite alcanzado para {language} (diario: {bot_status[daily_key]}/{CONFIG['API_LIMITS']['TWEETS_PER_DAY']})")
+            logging.info(f"Límite alcanzado para {language}")
             return False
-        
+
         last_tweet_time = bot_status[last_tweet_key]
         if last_tweet_time and (time.time() - last_tweet_time.timestamp()) < CONFIG["INTERVALS"]["TWEET_COOLDOWN_SECONDS"]:
             logging.info(f"Espera requerida para {language}")
             return False
-        
+
         if await is_published_in_language(title, summary, tweet_url, source, language):
             logging.info(f"Tweet ya publicado en {language}: {tweet_url}")
             return False
-        
-        tweet_response = await make_twitter_request(
-            client.get_tweet,
-            id=tweet_id,
-            tweet_fields=["text"],
-            category="read"
-        )
+
+        tweet_response = await make_twitter_request(client.get_tweet, id=tweet_id, tweet_fields=["text"], category="read")
         if not tweet_response.data:
             logging.warning(f"No se pudo obtener el tweet {tweet_id}")
             return False
@@ -2518,7 +2371,7 @@ async def repost_tweet_from_url(tweet_url: str, summary: str, language: str = 'e
         bot_status[monthly_key] += 1
         bot_status[posted_key] += 1
         bot_status[last_tweet_key] = datetime.now()
-        
+
         news_hash = hashlib.sha256((title + summary + tweet_url + source).encode()).hexdigest()
         cursor.execute('''INSERT OR IGNORE INTO historial (hash, title, url, tweet, relevance, source, date, engagement, summary, language)
                         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
@@ -2526,7 +2379,7 @@ async def repost_tweet_from_url(tweet_url: str, summary: str, language: str = 'e
         conn.commit()
         save_bot_state_sync(cursor, conn)
         return True
-        
+
     except Exception as e:
         logging.error(f"Error al citar tweet {tweet_url} en {language}: {e}", exc_info=True)
         bot_status["errors"] += 1
@@ -3268,7 +3121,12 @@ async def process_rss_feeds(session: aiohttp.ClientSession, trends: list[str]) -
                         date_tuple = entry.get("published_parsed") or entry.get("updated_parsed")
                         # Asegurarse de que date_tuple sea válido antes de desempaquetar
                         date = datetime(*date_tuple[:6]) if date_tuple and len(date_tuple) >= 6 else datetime.now() # Usar fecha actual como fallback
-
+                        
+                        # Filtrar noticias de más de 24 horas
+                        if (datetime.now() - date).total_seconds() > 24 * 3600:
+                            logging.debug(f"Noticia antigua ignorada (más de 24h): {title[:50]}...")
+                            continue
+                         
                         rss_news.append({
                             "title": title,
                             "link": link,
@@ -3519,9 +3377,7 @@ async def main():
     scheduler.add_job(update_twitter_feeds, IntervalTrigger(minutes=CONFIG["INTERVALS"]["UPDATE_TWITTER_FEEDS_MINUTES"]), misfire_grace_time=300)
     scheduler.add_job(process_queue, IntervalTrigger(minutes=CONFIG["INTERVALS"]["QUEUE_PROCESSING_MINUTES"]), misfire_grace_time=300)
     scheduler.add_job(review_queue, IntervalTrigger(minutes=CONFIG["INTERVALS"]["QUEUE_PROCESSING_MINUTES"]), misfire_grace_time=300)
-    scheduler.add_job(fetch_and_post_weather,CronTrigger(hour=22, minute=0, second=0, timezone="UTC"),misfire_grace_time=600)
-    scheduler.add_job(fetch_and_post_carbon_intensity,CronTrigger(hour=10, minute=0, second=0, timezone="UTC"),misfire_grace_time=600)
-
+    
     loop = asyncio.get_event_loop()
     loop.create_task(run_discord())
     loop.create_task(heartbeat())
