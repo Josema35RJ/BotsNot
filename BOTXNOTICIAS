@@ -1,5 +1,6 @@
 import collections
 from email.utils import parsedate_to_datetime
+import html
 import logging
 import random
 from typing import Dict, Optional
@@ -60,21 +61,30 @@ CONFIG = {
         "MONTHLY_POSTS_TOTAL": 1500  # Reducir el límite mensual total (1500 es el máximo, mejor dejar margen)
     },
     "INTERVALS": {
-        "PROCESS_NEWS_MINUTES": 60,  # Procesar noticias de RSS/Discord cada hora (no usa API de X para leer)
+        "PROCESS_NEWS_MINUTES": 5,  # Tarea principal de procesamiento y potencial publicación. Se ejecuta cada 58 minutos.
         "CHECK_HEALTH_MINUTES": 60, # Mantener la verificación de salud
-        # *** MODIFICACIÓN SUGERIDA 1: Aumentar este intervalo ***
-        # Aumenta significativamente el tiempo entre actualizaciones de feeds de Twitter/X.
-        # Prueba con 1440 (24 horas) o incluso más si sigues teniendo problemas.
-        "UPDATE_TWITTER_FEEDS_MINUTES": 2880, # Ejemplo: Cambiado de 720 a 1440 (24 horas)
+        "UPDATE_TWITTER_FEEDS_MINUTES": 2880, # Ejemplo: Cambiado de 720 a 1440 (24 horas) - Actualiza feeds de Twitter/X (solo lectura)
         "HEARTBEAT_SECONDS": 300, # Mantener el heartbeat
-        "TWEET_COOLDOWN_SECONDS": 600,  # 45 minutos entre tweets (ayuda a espaciar publicaciones)
+        "TWEET_COOLDOWN_SECONDS": 5,  # 60 MINUTOS entre tweets del mismo idioma. (Anteriormente el comentario decía 45 min)
         "DISCORD_MESSAGE_COOLDOWN_SECONDS": 10, # Mantener el cooldown de mensajes de Discord
-        "DISCORD_PROCESSING_SECONDS": 30,  # Mantener el procesamiento frecuente de Discord
-        # *** MODIFICACIÓN SUGERIDA 2: Aumentar este retardo ***
-        # Incrementa la pausa base entre procesar diferentes cuentas de Twitter en update_twitter_feeds.
-        # Prueba con 120 (2 minutos) o más.
-        "API_REQUEST_DELAY_SECONDS": 300, # Ejemplo: Cambiado de 90 a 120
-        "QUEUE_PROCESSING_MINUTES": 60,  # Procesar cola de publicación cada 20 minutos (ajustar si es necesario)
+
+        # --- AJUSTES PROPUESTOS PARA REDUCIR MENSAJES DE "PERÍODO DE ENFRIAMIENTO" ---
+        # La tarea `discord_news_processor` llama a `process_news`.
+        # `process_news` también está programada para ejecutarse cada `PROCESS_NEWS_MINUTES`.
+        # Para evitar que `process_news` se ejecute con demasiada frecuencia debido a `discord_news_processor`,
+        # ajustamos `DISCORD_PROCESSING_SECONDS` para que sea similar o mayor que `PROCESS_NEWS_MINUTES`.
+        "DISCORD_PROCESSING_SECONDS": 10, # ANTERIORMENTE: 30. AHORA: 3600 segundos (60 minutos).
+                                            # Esto alinea la frecuencia de llamada de `process_news` desde `discord_news_processor`
+                                            # con su propia programación, haciendo que `process_news` se ejecute aproximadamente cada 58-60 minutos.
+
+        "API_REQUEST_DELAY_SECONDS": 3600, # Ejemplo: Cambiado de 90 a 120 - Pausa entre procesar diferentes cuentas de Twitter en update_twitter_feeds (no afecta frecuencia de publicación directa de noticias)
+
+        # La cola de publicación (`process_queue` y `review_queue`) intenta publicar tweets que ya fueron seleccionados
+        # y están en la base de datos. Si el cooldown principal es de 1 hora, y `process_news` (que añade a la cola)
+        # se ejecuta cada ~1 hora, no tiene sentido procesar la cola cada minuto.
+        "QUEUE_PROCESSING_MINUTES": 3000,  # ANTERIORMENTE: 1. AHORA: 55 minutos.
+                                        # Esto permite que los elementos encolados se intenten publicar poco antes
+                                        # del próximo ciclo principal de `process_news`, respetando mejor el cooldown.
     },
     "PATHS": {
         "RSS_CACHE_DIR": "rss_cache",
@@ -644,11 +654,6 @@ def connect_sqlite():
     """
     global bot_status, conn, cursor
     try:
-        # check_same_thread=False permite acceder desde diferentes hilos,
-        # pero requiere que cada hilo use su propio cursor y no comparta conexiones/cursores.
-        # Con run_in_executor, cada llamada a la función de DB se ejecuta en un hilo del pool,
-        # por lo que es más seguro si cada función de DB obtiene su propia conexión/cursor temporal,
-        # o si la conexión global solo se usa DENTRO de las funciones ejecutadas por run_in_executor.
         conn = sqlite3.connect(CONFIG["PATHS"]["DB_FILE"], check_same_thread=False)
         cursor = conn.cursor()
 
@@ -670,25 +675,18 @@ def connect_sqlite():
                         )''')
         cursor.execute('''CREATE INDEX IF NOT EXISTS idx_hash ON historial (hash)''')
 
-        cursor.execute("PRAGMA table_info(historial)")
-        columns = [column[1] for column in cursor.fetchall()]
-        if "language" not in columns:
-            logging.info("La columna 'language' no existe en 'historial'. Agregándola...")
-            cursor.execute("ALTER TABLE historial ADD COLUMN language TEXT")
-            conn.commit()
-            logging.info("Columna 'language' agregada exitosamente a 'historial'.")
-
         cursor.execute('''CREATE TABLE IF NOT EXISTS bot_state (
                             key TEXT PRIMARY KEY,
                             value TEXT
                         )''')
 
+        # Tabla cola_publicacion con image_url en lugar de image_data
         cursor.execute('''CREATE TABLE IF NOT EXISTS cola_publicacion (
                             id INTEGER PRIMARY KEY AUTOINCREMENT,
                             title TEXT,
                             summary TEXT,
                             url TEXT,
-                            image_data BLOB,
+                            image_url TEXT,
                             news_hash TEXT,
                             score REAL,
                             source TEXT,
@@ -858,6 +856,8 @@ async def on_message(message):
             message.content or ""
         )
 
+        is_retweet = message.content.startswith("RT @")
+
         if message.embeds:
             for embed in message.embeds:
                 title = embed.title or "Sin título"
@@ -871,11 +871,15 @@ async def on_message(message):
                     )
                     url = embed_urls[0] if embed_urls else f"discord://{message.channel.id}/{message.id}"
 
+                image_url = embed.image.url if embed.image else None
+                if not image_url and url:  # Solo usar url, que ya está definida
+                    async with aiohttp.ClientSession() as session:
+                        image_url = await get_image_from_url(session, url)
+
                 if await is_duplicate(title, summary, url, source):
                     logging.info(f"Duplicado detectado en embed: {title[:50]}")
                     continue
 
-                image_url = embed.image.url if embed.image else None
                 news_hash = hashlib.sha256((title + summary + url + source).encode()).hexdigest()
                 discord_news[message.channel.id].append({
                     "title": title,
@@ -885,7 +889,8 @@ async def on_message(message):
                     "date": datetime.now(),
                     "hash": news_hash,
                     "image_url": image_url,
-                    "is_discord": True
+                    "is_discord": True,
+                    "is_retweet": is_retweet
                 })
                 logging.info(f"Noticia añadida desde {source}: {title[:50]} - {url}")
 
@@ -909,6 +914,11 @@ async def on_message(message):
                         logging.warning(f"Error validando URL para '{title}': {e}")
                         continue
 
+                image_url = None
+                if not image_url:
+                    async with aiohttp.ClientSession() as session:
+                        image_url = await get_image_from_url(session, url)
+
                 news_hash = hashlib.sha256((title + summary + url + source).encode()).hexdigest()
                 discord_news[message.channel.id].append({
                     "title": title,
@@ -917,8 +927,9 @@ async def on_message(message):
                     "source": source,
                     "date": datetime.now(),
                     "hash": news_hash,
-                    "image_url": None,
-                    "is_discord": True
+                    "image_url": image_url,
+                    "is_discord": True,
+                    "is_retweet": is_retweet
                 })
                 logging.info(f"Noticia añadida desde {source} (URL): {title[:50]} - {url}")
 
@@ -931,8 +942,12 @@ async def on_message(message):
                 logging.info(f"Duplicado detectado en texto plano: {title[:50]}")
                 return
 
-            news_hash = hashlib.sha256((title + summary + url + source).encode()).hexdigest()
             image_url = message.attachments[0].url if message.attachments else None
+            if not image_url:
+                async with aiohttp.ClientSession() as session:
+                    image_url = await get_image_from_url(session, url)
+
+            news_hash = hashlib.sha256((title + summary + url + source).encode()).hexdigest()
             discord_news[message.channel.id].append({
                 "title": title,
                 "link": url,
@@ -941,7 +956,8 @@ async def on_message(message):
                 "date": datetime.now(),
                 "hash": news_hash,
                 "image_url": image_url,
-                "is_discord": True
+                "is_discord": True,
+                "is_retweet": is_retweet
             })
             logging.info(f"Noticia de texto añadida desde {source}: {title[:50]}")
 
@@ -1787,12 +1803,13 @@ async def score_news(entry, trends):
             logging.warning("Título de noticia vacío.")
             return 0.0
     
-        # Filtrar noticias de gaming/tecnología
+        # Filtrar noticias no deseadas basadas en KEYWORDS (lista)
         text_lower = text.lower()
         if any(keyword in text_lower for keyword in KEYWORDS_EN):
             logging.debug(f"Noticia descartada por tema de gaming/tecnología: {text}")
-            return 0.0  # Puntuación 0 para descartar
+            return 0.0
 
+        # Calcular puntaje base con DistilBERT
         def run_bert(inputs):
             with torch.no_grad():
                 outputs = bert_model(**inputs)
@@ -1812,15 +1829,15 @@ async def score_news(entry, trends):
         loop = asyncio.get_running_loop()
         score = await loop.run_in_executor(None, partial(run_bert, inputs))
 
-        # Intentar recuperar imagen si no existe
+        # Intentar recuperar imagen si no existe mediante scraping
         image_score = 0.0
         if not entry.get("image_url"):
             async with aiohttp.ClientSession() as session:
                 try:
-                    image_url = await get_image_from_url(entry.get("link", ""), session)
+                    image_url = await get_image_from_url(session, entry.get("link", ""))
                     if image_url:
                         entry["image_url"] = image_url
-                        image_score = 10.0  # Puntuación adicional por imagen
+                        image_score = 10.0
                         logging.info(f"Imagen recuperada para noticia: {text[:50]} - {image_url}")
                     else:
                         logging.debug(f"No se encontró imagen para noticia: {text[:50]}")
@@ -1831,12 +1848,15 @@ async def score_news(entry, trends):
         trend_score = 0.0
         for trend in trends:
             if trend.lower() in text_lower:
-                trend_score += 20.0  # Aumentar puntaje en escala 0-100
+                trend_score += 20.0
+
+        # Bonificación para retuits
+        retweet_bonus = 10.0 if entry.get("is_retweet", False) else 0.0
 
         # Calcular puntuación final
-        final_score = min((score * 100) + trend_score + image_score, 100.0)  # Escala 0-100
+        final_score = min((score * 100) + trend_score + image_score + retweet_bonus, 100.0)
 
-        logging.debug(f"Noticia puntuada: {text} con score {final_score} (base: {score*100}, tendencias: {trend_score}, imagen: {image_score})")
+        logging.debug(f"Noticia puntuada: {text} con score {final_score} (base: {score*100}, tendencias: {trend_score}, imagen: {image_score}, retweet: {retweet_bonus})")
         return final_score
 
     except Exception as e:
@@ -2015,7 +2035,21 @@ def get_summary_sentences(summary: str, max_chars: int) -> str:
         current_length += sentence_length
     return " ".join(selected_sentences).strip()
 
+import spacy
+from sumy.parsers.plaintext import PlaintextParser
+from sumy.nlp.tokenizers import Tokenizer
+from sumy.summarizers.text_rank import TextRankSummarizer
+from yake import KeywordExtractor
+import re
+import random
+
 async def generate_detailed_tweet(title: str, summary: str, url: str, trends: list[str], language: str) -> str:
+    # Cargar herramientas de IA
+    nlp = spacy.load("en_core_web_sm")
+    kw_extractor = KeywordExtractor(n=3, top=5)
+    summarizer = TextRankSummarizer()
+
+    # Acortar URL y calcular longitud máxima del contenido
     short_url = await shorten_url(url)
     max_content_length = CONFIG["TWEET"]["MAX_LENGTH"] - len(short_url) - 40
 
@@ -2046,22 +2080,23 @@ async def generate_detailed_tweet(title: str, summary: str, url: str, trends: li
         emoji = "🔥"
         tone = "urgent"
 
-    # Extracción de entidades
-    entities = []
-    entity_patterns = [
-        (r"\b(playstation|ps[45])\b", "PlayStation"),
-        (r"\b(xbox|series [xs])\b", "Xbox"),
-        (r"\b(nintendo|switch)\b", "Nintendo"),
-        (r"\b(pc|steam|epic games)\b", "PC"),
-        (r"\b(elden ring|cyberpunk 2077|call of duty|fortnite|god of war|zelda|halo)\b", lambda m: m.group(0).title()),
-        (r"\b(fromsoftware|ubisoft|activision|ea sports|square enix)\b", lambda m: m.group(0).title())
-    ]
-    for text in [title_lower, summary_lower]:
-        for pattern, entity_name in entity_patterns:
-            matches = re.findall(pattern, text, re.IGNORECASE)
-            for match in matches:
-                entities.append(entity_name(match) if callable(entity_name) else entity_name)
-    entities = list(dict.fromkeys(entities))[:2]
+    # Extracción de entidades y temas con IA
+    doc = nlp(summary)
+    entities = [ent.text for ent in doc.ents if ent.label_ in ["PERSON", "ORG", "PRODUCT", "GPE"]][:2]
+    keywords = kw_extractor.extract_keywords(summary)
+    topics = [kw[0] for kw in keywords][:3]
+
+    # Seleccionar oraciones clave con resumen extractivo
+    parser = PlaintextParser.from_string(clean_text(summary), Tokenizer("english"))
+    summary_sentences = summarizer(parser.document, 2)  # Top 2 oraciones
+    key_sentences = " ".join([str(sentence) for sentence in summary_sentences])
+
+    # Generar contenido atractivo
+    content = key_sentences[:max_content_length].strip()
+
+    # Traducción si es necesario
+    if language == "es" and "twitter" not in url.lower():
+        content = await translate_to_spanish(content)
 
     # Generación de gancho
     hooks_en = {
@@ -2149,33 +2184,11 @@ async def generate_detailed_tweet(title: str, summary: str, url: str, trends: li
         }
     }
     hook_dict = hooks_es if language == "es" else hooks_en
-    options = hook_dict.get(news_type, {}).get(tone, hook_dict[news_type]["default"])
+    options = hook_dict.get(news_type, {}).get(tone, hook_dict["default"]["enthusiastic"])
     hook = random.choice(options).format(entity=entities[0] if entities else "juego")
 
-    # Selección de contenido
-    sentences = re.split(r'[.!?]+', clean_text(summary))
-    scored_sentences = []
-    for sentence in sentences:
-        sentence = sentence.strip()
-        if not sentence:
-            continue
-        score = len(sentence.split()) * 0.1
-        for entity in entities:
-            if entity.lower() in sentence.lower():
-                score += 5
-        for trend in trends:
-            if trend.lower() in sentence.lower():
-                score += 3
-        scored_sentences.append((sentence, score))
-    scored_sentences.sort(key=lambda x: x[1], reverse=True)
-    content = " ".join([s for s, _ in scored_sentences[:2]])[:max_content_length].strip()
-
-    # Traducción si es necesario
-    if language == "es" and "twitter" not in url.lower():
-        content = await translate_to_spanish(content)
-
     # Generación de hashtags
-    hashtag_candidates = [re.sub(r"\s+", "", e) for e in entities if len(e) <= 15]
+    hashtag_candidates = [re.sub(r"\s+", "", e) for e in entities + topics if len(e) <= 15]
     for trend in trends:
         clean_trend = re.sub(r"\s+", "", trend)
         if len(clean_trend) <= 15 and clean_trend not in hashtag_candidates:
@@ -2401,12 +2414,9 @@ async def post_tweet(session: aiohttp.ClientSession, title: str, summary: str, u
     # Check if writing for this language is paused
     if current_time < bot_status["twitter_wait_until"].get(category, 0):
         logging.warning(f"In waiting period for {category} until {datetime.fromtimestamp(bot_status['twitter_wait_until'][category]).strftime('%H:%M:%S')}. Skipping post attempt.")
-        # Add to queue if not already published and not in queue?
-        # This logic is better handled in process_single_news or the caller
         return False
 
     client = twitter_client_en if language == "en" else twitter_client_es
-    api = twitter_api_en if language == "en" else twitter_api_es
     daily_key = "daily_tweets_total"
     monthly_key = f"monthly_posts_{language}"
     posted_key = f"posted_tweets_{language}"
@@ -2425,25 +2435,33 @@ async def post_tweet(session: aiohttp.ClientSession, title: str, summary: str, u
             return False
 
         # Check tweet cooldown using CONFIG["INTERVALS"]["TWEET_COOLDOWN_SECONDS"]
-        last_tweet_time = bot_status.get(last_tweet_key) # Use .get() for safety
+        last_tweet_time = bot_status.get(last_tweet_key)
         if last_tweet_time and (current_time - last_tweet_time.timestamp()) < CONFIG["INTERVALS"]["TWEET_COOLDOWN_SECONDS"]:
             remaining = CONFIG["INTERVALS"]["TWEET_COOLDOWN_SECONDS"] - (current_time - last_tweet_time.timestamp())
             logging.info(f"Cooldown required for {language}: {remaining/60:.1f} minutes remaining. Skipping post attempt.")
             return False
 
         # Check if already published using the async function is_published_in_language
-        # This check is critical before attempting to post
         if await is_published_in_language(title, summary, url, source, language):
             logging.info(f"News already published in {language}: {title[:50]}. Skipping post attempt.")
             return False
 
         logging.info(f"Intentando publicar en {language}: {title[:50]}...")
-        tweet = await generate_detailed_tweet(title, summary, url, trends, language) # generate_detailed_tweet must be defined
+        tweet = await generate_detailed_tweet(title, summary, url, trends, language)
+        
+        # Sanitize tweet text: decode HTML entities, remove HTML tags, clean extra spaces/lines
+        tweet = html.unescape(tweet)  # Decode entities like ltpgt to <p>
+        tweet = re.sub(r'<[^>]+>', '', tweet)  # Remove HTML tags
+        tweet = re.sub(r'\s+', ' ', tweet.strip())  # Replace multiple spaces/lines with single space
+        # Remove unwanted promotional phrases (customize as needed)
+        tweet = re.sub(r'Release just dropped!|¡Lanzamiento épico de Release', '', tweet, flags=re.IGNORECASE)
+        tweet = tweet.strip()  # Remove leading/trailing spaces
+        logging.debug(f"Sanitized tweet text: {tweet[:100]}...")
+
         temp_image_path = os.path.join(CONFIG["PATHS"]["TEMP_IMAGE_DIR"], f"{news_hash}_{language}.jpg")
 
         media = None
-        # --- MODIFICATION: Check if image_data is valid before attempting to optimize/upload ---
-        # image_data is already bytes | None from previous steps
+        # Check if image_data is valid before attempting to optimize/upload
         if image_data and isinstance(image_data, bytes) and len(image_data) > 0:
             # Use aiofiles for asynchronous file operations
             try:
@@ -2460,6 +2478,14 @@ async def post_tweet(session: aiohttp.ClientSession, title: str, summary: str, u
                         await f.write(optimized_image_data)
 
                     try:
+                        # Initialize API v1.1 for media upload
+                        api = tweepy.API(
+                            consumer_key=os.getenv("TWITTER_CONSUMER_KEY"),
+                            consumer_secret=os.getenv("TWITTER_CONSUMER_SECRET"),
+                            access_token=os.getenv("TWITTER_ACCESS_TOKEN"),
+                            access_token_secret=os.getenv("TWITTER_ACCESS_TOKEN_SECRET")
+                        )
+                        logging.debug("API v1.1 inicializada para subida de medios")
                         # make_twitter_request handles Tweepy's sync call and rate limits
                         media = await make_twitter_request(
                             api.media_upload,
@@ -2470,17 +2496,17 @@ async def post_tweet(session: aiohttp.ClientSession, title: str, summary: str, u
                         )
                         logging.debug(f"Image uploaded successfully for tweet in {language}.")
                     except Exception as e:
-                         logging.error(f"Error uploading image for tweet in {language}: {e}")
-                         media = None # Continue without image if upload fails
+                        logging.error(f"Error uploading image for tweet in {language}: {e}")
+                        media = None
                 else:
                     logging.warning(f"Image optimization failed for tweet in {language}. Posting without image.")
-                    media = None # Post without image if optimization fails
+                    media = None
             except Exception as e:
                 logging.error(f"Error processing image for tweet in {language}: {e}", exc_info=True)
-                media = None # Ensure media is None if any image processing error occurs
+                media = None
         else:
             logging.debug(f"No valid image data provided for tweet in {language}. Posting without image.")
-            media = None # No image data to process
+            media = None
 
         tweet_response = None
         try:
@@ -2488,7 +2514,7 @@ async def post_tweet(session: aiohttp.ClientSession, title: str, summary: str, u
             tweet_response = await make_twitter_request(
                 client.create_tweet,
                 text=tweet,
-                media_ids=[media.media_id] if media else None, # Pass media_ids only if media exists
+                media_ids=[media.media_id] if media else None,
                 category=category,
                 semaphore=semaphore,
                 rate_limit_event=rate_limit_event
@@ -2509,44 +2535,36 @@ async def post_tweet(session: aiohttp.ClientSession, title: str, summary: str, u
                 (news_hash, title, url, tweet, score, source, datetime.now().isoformat(), 0, summary, language)
             )
             await run_db_sync(conn.commit)
-            await save_bot_state() # Save state after successful post and history update
+            await save_bot_state()
 
             return True
 
         except Exception as e:
             logging.error(f"Error posting tweet in {language}: {e}", exc_info=True)
-            # Check if the error is a recoverable rate limit error (429)
             is_rate_limit_error = isinstance(e, tweepy.TweepyException) and e.response and e.response.status_code == 429
 
-            # Add to queue ONLY if it's a recoverable error AND it hasn't been published yet in this language
-            # The check `await is_published_in_language(...)` is crucial here to avoid queuing items that were
-            # successfully posted by another process/attempt but failed to be removed from a previous queue run.
             if is_rate_limit_error and not await is_published_in_language(title, summary, url, source, language):
-                 trends_json = json.dumps(trends)
-                 # Add to queue using run_db_sync
-                 # Store the ORIGINAL image_data (bytes or None) in the queue
-                 await run_db_sync(
-                     cursor.execute,
-                     '''INSERT INTO cola_publicacion (title, summary, url, image_data, news_hash, score, source, language, trends)
-                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)''',
-                     (title, summary, url, image_data, news_hash, score, source, language, trends_json)
-                 )
-                 await run_db_sync(conn.commit)
-                 logging.info(f"News '{title[:50]}' added to queue for {language} due to rate limit.")
+                trends_json = json.dumps(trends)
+                await run_db_sync(
+                    cursor.execute,
+                    '''INSERT INTO cola_publicacion (title, summary, url, image_data, news_hash, score, source, language, trends)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)''',
+                    (title, summary, url, image_data, news_hash, score, source, language, trends_json)
+                )
+                await run_db_sync(conn.commit)
+                logging.info(f"News '{title[:50]}' added to queue for {language} due to rate limit.")
             else:
-                 # If it's not a rate limit error, or if it's already published, just log the error.
-                 logging.warning(f"News '{title[:50]}' failed to post in {language} due to non-recoverable error or already published. Not adding to queue.")
+                logging.warning(f"News '{title[:50]}' failed to post in {language} due to non-recoverable error or already published. Not adding to queue.")
 
-
-            bot_status["errors"] += 1 # Increment error counter for any posting failure
-            await save_bot_state() # Save state after error (and potential queue addition)
-            return False # Return False if posting failed
+            bot_status["errors"] += 1
+            await save_bot_state()
+            return False
 
     finally:
-        # Use asyncio.to_thread for synchronous file operations like os.remove
         if os.path.exists(temp_image_path):
             await asyncio.to_thread(os.remove, temp_image_path)
-        # await asyncio.sleep(2) # Small pause after attempting to post (optional, make_twitter_request might already wait)
+            
+queue_lock = asyncio.Lock()
 
 async def review_queue():
     """
@@ -2554,237 +2572,276 @@ async def review_queue():
     maximizando el uso de los límites del plan gratuito (50 tweets/día, 1500 posts/mes).
     """
     global bot_status
-    bot_status["last_task"] = "Revisando cola de publicaciones"
-    logging.info("Iniciando revisión avanzada de la cola de publicaciones...")
+    async with queue_lock:  # Evitar concurrencia
+        bot_status["last_task"] = "Revisando cola de publicaciones"
+        logging.info("Iniciando revisión avanzada de la cola de publicaciones...")
 
-    try:
-        # Obtener estado actual de la API
-        current_time = time.time()
-        tweets_remaining = CONFIG["API_LIMITS"]["TWEETS_PER_DAY"] - bot_status["daily_tweets_total"]
-        monthly_remaining = CONFIG["API_LIMITS"]["MONTHLY_POSTS_TOTAL"] - (bot_status["monthly_posts_en"] + bot_status["monthly_posts_es"])
-        trends_last_updated = bot_status.get("trends_last_updated", 0)
-        trends_expired = current_time - trends_last_updated > 4 * 3600  # Actualizar tendencias cada 4 horas
+        try:
+            # Obtener estado actual de la API
+            current_time = time.time()
+            tweets_remaining = CONFIG["API_LIMITS"]["TWEETS_PER_DAY"] - bot_status["daily_tweets_total"]
+            monthly_remaining = CONFIG["API_LIMITS"]["MONTHLY_POSTS_TOTAL"] - (bot_status["monthly_posts_en"] + bot_status["monthly_posts_es"])
+            trends_last_updated = bot_status.get("trends_last_updated", 0)
+            trends_expired = current_time - trends_last_updated > 4 * 3600  # Actualizar tendencias cada 4 horas
 
-        # Obtener tendencias solo si es necesario
-        trends = []
-        if trends_expired or not bot_status.get("current_trends"):
-            trends = await get_trending_keywords()
-            bot_status["trends_last_updated"] = current_time
-            bot_status["current_trends"] = trends
-            logging.info("Tendencias actualizadas desde la API.")
-        else:
-            trends = bot_status["current_trends"]
-            logging.debug("Usando tendencias en caché.")
-
-        # Obtener elementos de la cola
-        cursor.execute("SELECT id, title, summary, url, news_hash, score, source, language, trends, added_at FROM cola_publicacion")
-        queue_items = await run_db_sync(cursor.fetchall)
-
-        if not queue_items:
-            logging.info("La cola de publicaciones está vacía.")
-            return
-
-        items_to_remove = []
-        items_to_publish = []
-        updated_items = []
-
-        # Calcular el número ideal de tweets por hora para distribuir uniformemente
-        hours_left_in_day = (24 - datetime.now().hour) % 24 or 24
-        ideal_tweets_per_hour = min(tweets_remaining / max(hours_left_in_day, 1), 3)  # Máximo 3 tweets/hora
-        min_wait_between_tweets = 3600 / max(ideal_tweets_per_hour, 1) if ideal_tweets_per_hour > 0 else 300
-
-        # Procesar cada elemento de la cola
-        for item in queue_items:
-            id, title, summary, url, news_hash, old_score, source, language, old_trends_json, added_at = item
-            added_at = datetime.fromisoformat(added_at) if isinstance(added_at, str) else added_at
-
-            # Recalcular puntuación
-            entry = {"title": title, "summary": summary, "link": url, "source": source, "date": added_at}
-            new_score = await score_news(entry, trends)
-
-            # Aplicar decaimiento por antigüedad (15% por día)
-            age_days = (datetime.now() - added_at).total_seconds() / (24 * 3600)
-            decay_factor = max(0, 1 - 0.15 * age_days)
-            new_score *= decay_factor
-
-            # Calcular índice de urgencia
-            urgency = new_score
-            if source.startswith("discord") or source in [f"twitter_{acc}" for acc in TWITTER_ACCOUNTS]:
-                urgency *= 1.2  # Priorizar fuentes clave
-            if any(trend.lower() in title.lower() or trend.lower() in summary.lower() for trend in trends):
-                urgency *= 1.3  # Aumentar si coincide con tendencias
-            urgency *= min(1, 1.5 - age_days / 2)  # Reducir para noticias antiguas
-            urgency *= (1 + 0.5 * tweets_remaining / CONFIG["API_LIMITS"]["TWEETS_PER_DAY"])  # Aumentar si hay muchos tweets disponibles
-            urgency *= (1 + 0.2 * monthly_remaining / CONFIG["API_LIMITS"]["MONTHLY_POSTS_TOTAL"])  # Aumentar si hay margen mensual
-
-            # Decidir acción
-            if new_score < 5 or age_days > 3:
-                items_to_remove.append(id)
-                logging.debug(f"Elemento {title[:50]} (ID: {id}) marcado para eliminar: puntuación {new_score:.1f}, edad {age_days:.1f} días")
+            # Obtener tendencias solo si es necesario
+            trends = []
+            if trends_expired or not bot_status.get("current_trends"):
+                trends = await get_trending_keywords()
+                bot_status["trends_last_updated"] = current_time
+                bot_status["current_trends"] = trends
+                logging.info("Tendencias actualizadas desde la API.")
             else:
-                updated_items.append((new_score, json.dumps(trends), id))
-                # Determinar si publicar ahora o esperar
-                wait_time = 0
-                if tweets_remaining <= 3 or monthly_remaining <= 20:
-                    wait_time = 600  # Esperar 10 minutos si los límites están muy bajos
-                elif len(queue_items) > 40:
-                    wait_time = 180 * (1 - urgency / 20)  # Escalonar espera si la cola está casi llena
-                elif urgency < 8:
-                    wait_time = 90 * (1 - urgency / 15)  # Esperar más para noticias menos urgentes
-                wait_time = max(wait_time, min_wait_between_tweets)  # Respetar el ritmo ideal
+                trends = bot_status["current_trends"]
+                logging.debug("Usando tendencias en caché.")
 
-                # Verificar cooldowns y tiempos de espera de la API
-                lang_key = f"write_{language}"
-                last_tweet_time = bot_status.get(f"last_tweet_time_{language}")
-                api_wait_until = bot_status["twitter_wait_until"].get(lang_key, 0)
-                cooldown_elapsed = not last_tweet_time or (current_time - last_tweet_time.timestamp()) >= CONFIG["INTERVALS"]["TWEET_COOLDOWN_SECONDS"]
+            # Obtener elementos de la cola
+            cursor.execute("SELECT id, title, summary, url, image_url, news_hash, score, source, language, trends, added_at FROM cola_publicacion")
+            queue_items = await run_db_sync(cursor.fetchall)
 
-                if wait_time <= 0 and current_time >= api_wait_until and cooldown_elapsed:
-                    items_to_publish.append((id, entry, new_score, language, trends, urgency))
-                    logging.debug(f"Elemento {title[:50]} (ID: {id}) listo para publicación: urgencia {urgency:.1f}")
-                else:
-                    logging.debug(f"Elemento {title[:50]} (ID: {id}) en espera: {wait_time:.1f}s, cooldown: {not cooldown_elapsed}, API wait: {api_wait_until - current_time:.1f}s")
+            if not queue_items:
+                logging.info("La cola de publicaciones está vacía.")
+                return
 
-        # Ordenar elementos a publicar por urgencia
-        items_to_publish.sort(key=lambda x: x[5], reverse=True)
+            items_to_remove = []
+            items_to_publish = []
+            updated_items = []
+            published_this_cycle = {"en": False, "es": False}  # Limitar a un tweet por idioma por ciclo
 
-        # Publicar elementos seleccionados, respetando límites
-        async with aiohttp.ClientSession() as session:
-            for id, entry, score, language, trends, urgency in items_to_publish[:tweets_remaining]:
-                if await publish_news(session, entry, entry.get("hash", ""), score, language, trends):
-                    items_to_remove.append(id)
-                    bot_status["daily_tweets_total"] += 1
-                    bot_status[f"monthly_posts_{language}"] += 1
-                    bot_status[f"last_tweet_time_{language}"] = datetime.now()
-                    logging.info(f"Publicado desde cola (ID: {id}): {entry['title'][:50]} en {language}")
-                    await asyncio.sleep(CONFIG["INTERVALS"]["API_REQUEST_DELAY_SECONDS"])
-                else:
-                    logging.warning(f"Fallo al publicar elemento (ID: {id}): {entry['title'][:50]}")
+            # Calcular el número ideal de tweets por hora para distribuir uniformemente
+            hours_left_in_day = (24 - datetime.now().hour) % 24 or 24
+            ideal_tweets_per_hour = min(tweets_remaining / max(hours_left_in_day, 1), 3)  # Máximo 3 tweets/hora
+            min_wait_between_tweets = 3600 / max(ideal_tweets_per_hour, 1) if ideal_tweets_per_hour > 0 else 300
 
-        # Eliminar elementos irrelevantes o publicados
-        if items_to_remove:
-            await run_db_sync(
-                cursor.execute,
-                f"DELETE FROM cola_publicacion WHERE id IN ({','.join('?' * len(items_to_remove))})",
-                tuple(items_to_remove)
-            )
-            logging.info(f"Eliminados {len(items_to_remove)} elementos de la cola.")
+            # Procesar cada elemento de la cola
+            async with aiohttp.ClientSession() as session:
+                for item in queue_items:
+                    id, title, summary, url, image_url, news_hash, old_score, source, language, old_trends_json, added_at = item
+                    added_at = datetime.fromisoformat(added_at) if isinstance(added_at, str) else added_at
 
-        # Actualizar puntuaciones
-        if updated_items:
-            await run_db_sync(
-                cursor.executemany,
-                "UPDATE cola_publicacion SET score = ?, trends = ? WHERE id = ?",
-                updated_items
-            )
-            logging.info(f"Actualizadas puntuaciones de {len(updated_items)} elementos.")
+                    # Verificar si falta image_url y buscar una imagen si es necesario
+                    if not image_url or not image_url.strip():
+                        logging.info(f"No se encontró imagen para noticia en cola (ID: {id}): {title[:50]}. Buscando imagen...")
+                        try:
+                            image_url = await get_image_from_url(session, url)
+                            if image_url:
+                                await run_db_sync(
+                                    cursor.execute,
+                                    "UPDATE cola_publicacion SET image_url = ? WHERE id = ?",
+                                    (image_url, id)
+                                )
+                                await run_db_sync(conn.commit)
+                                logging.info(f"Imagen encontrada y actualizada para noticia en cola (ID: {id}): {title[:50]} - {image_url}")
+                            else:
+                                logging.warning(f"No se pudo encontrar imagen para noticia en cola (ID: {id}): {title[:50]} después de búsqueda")
+                        except Exception as e:
+                            logging.error(f"Error al buscar imagen para noticia en cola (ID: {id}) {title[:50]}: {e}")
 
-        # Limitar la cola a 50 elementos
-        cursor.execute("SELECT COUNT(*) FROM cola_publicacion")
-        queue_size = (await run_db_sync(cursor.fetchone))[0]
-        if queue_size > 50:
-            excess = queue_size - 50
-            cursor.execute("SELECT id FROM cola_publicacion ORDER BY score ASC LIMIT ?", (excess,))
-            excess_ids = [row[0] for row in await run_db_sync(cursor.fetchall)]
-            await run_db_sync(
-                cursor.execute,
-                f"DELETE FROM cola_publicacion WHERE id IN ({','.join('?' * len(excess_ids))})",
-                tuple(excess_ids)
-            )
-            logging.info(f"Eliminados {len(excess_ids)} elementos para mantener límite de 50.")
+                    # Recalcular puntuación
+                    entry = {
+                        "title": title,
+                        "summary": summary,
+                        "link": url,
+                        "image_url": image_url,
+                        "source": source,
+                        "date": added_at
+                    }
+                    new_score = await score_news(entry, trends)
 
-        await run_db_sync(conn.commit)
-        logging.info("Revisión avanzada de la cola completada.")
+                    # Aplicar decaimiento por antigüedad (15% por día)
+                    age_days = (datetime.now() - added_at).total_seconds() / (24 * 3600)
+                    decay_factor = max(0, 1 - 0.15 * age_days)
+                    new_score *= decay_factor
 
-    except Exception as e:
-        logging.error(f"Error revisando la cola de publicaciones: {e}", exc_info=True)
-        bot_status["errors"] += 1
-    finally:
-        await save_bot_state()
+                    # Calcular índice de urgencia
+                    urgency = new_score
+                    if source.startswith("discord") or source in [f"twitter_{acc}" for acc in TWITTER_ACCOUNTS]:
+                        urgency *= 1.2  # Priorizar fuentes clave
+                    if any(trend.lower() in title.lower() or trend.lower() in summary.lower() for trend in trends):
+                        urgency *= 1.3  # Aumentar si coincide con tendencias
+                    urgency *= min(1, 1.5 - age_days / 2)  # Reducir para noticias antiguas
+                    urgency *= (1 + 0.5 * tweets_remaining / CONFIG["API_LIMITS"]["TWEETS_PER_DAY"])  # Aumentar si hay muchos tweets disponibles
+                    urgency *= (1 + 0.2 * monthly_remaining / CONFIG["API_LIMITS"]["MONTHLY_POSTS_TOTAL"])  # Aumentar si hay margen mensual
+
+                    # Decidir acción
+                    if new_score < 5 or age_days > 3:
+                        items_to_remove.append(id)
+                        logging.debug(f"Elemento {title[:50]} (ID: {id}) marcado para eliminar: puntuación {new_score:.1f}, edad {age_days:.1f} días")
+                    else:
+                        updated_items.append((new_score, json.dumps(trends), id))
+                        # Determinar si publicar ahora o esperar
+                        wait_time = 0
+                        if tweets_remaining <= 3 or monthly_remaining <= 20:
+                            wait_time = 600  # Esperar 10 minutos si los límites están muy bajos
+                        elif len(queue_items) > 40:
+                            wait_time = 180 * (1 - urgency / 20)  # Escalonar espera si la cola está casi llena
+                        elif urgency < 8:
+                            wait_time = 90 * (1 - urgency / 15)  # Esperar más para noticias menos urgentes
+                        wait_time = max(wait_time, min_wait_between_tweets)  # Respetar el ritmo ideal
+
+                        # Verificar cooldowns y tiempos de espera de la API
+                        lang_key = f"write_{language}"
+                        last_tweet_time = bot_status.get(f"last_tweet_time_{language}")
+                        api_wait_until = bot_status["twitter_wait_until"].get(lang_key, 0)
+                        cooldown_elapsed = not last_tweet_time or (current_time - last_tweet_time.timestamp()) >= CONFIG["INTERVALS"]["TWEET_COOLDOWN_SECONDS"]
+
+                        if wait_time <= 0 and current_time >= api_wait_until and cooldown_elapsed:
+                            items_to_publish.append((id, entry, new_score, language, trends, urgency))
+                            logging.debug(f"Elemento {title[:50]} (ID: {id}) listo para publicación: urgencia {urgency:.1f}")
+                        else:
+                            logging.debug(f"Elemento {title[:50]} (ID: {id}) en espera: {wait_time:.1f}s, cooldown: {not cooldown_elapsed}, API wait: {api_wait_until - current_time:.1f}s")
+
+                # Ordenar elementos a publicar por urgencia
+                items_to_publish.sort(key=lambda x: x[5], reverse=True)
+
+                # Publicar elementos seleccionados, respetando límites
+                for id, entry, score, language, trends, urgency in items_to_publish[:tweets_remaining]:
+                    if not published_this_cycle[language]:  # Solo un tweet por idioma por ciclo
+                        if await publish_news(session, entry, entry.get("hash", ""), score, language, trends):
+                            items_to_remove.append(id)
+                            bot_status["daily_tweets_total"] += 1
+                            bot_status[f"monthly_posts_{language}"] += 1
+                            bot_status[f"last_tweet_time_{language}"] = datetime.now()
+                            published_this_cycle[language] = True
+                            logging.info(f"Publicado desde cola (ID: {id}): {entry['title'][:50]} en {language}. Actualizando last_tweet_time a {bot_status[f'last_tweet_time_{language}']}")
+                            await save_bot_state()
+                            await asyncio.sleep(CONFIG["INTERVALS"]["API_REQUEST_DELAY_SECONDS"])
+                        else:
+                            logging.warning(f"Fallo al publicar elemento (ID: {id}): {entry['title'][:50]}")
+
+            # Eliminar elementos irrelevantes o publicados
+            if items_to_remove:
+                await run_db_sync(
+                    cursor.execute,
+                    f"DELETE FROM cola_publicacion WHERE id IN ({','.join('?' * len(items_to_remove))})",
+                    tuple(items_to_remove)
+                )
+                logging.info(f"Eliminados {len(items_to_remove)} elementos de la cola.")
+
+            # Actualizar puntuaciones
+            if updated_items:
+                await run_db_sync(
+                    cursor.executemany,
+                    "UPDATE cola_publicacion SET score = ?, trends = ? WHERE id = ?",
+                    updated_items
+                )
+                logging.info(f"Actualizadas puntuaciones de {len(updated_items)} elementos.")
+
+            # Limitar la cola a 50 elementos
+            cursor.execute("SELECT COUNT(*) FROM cola_publicacion")
+            queue_size = (await run_db_sync(cursor.fetchone))[0]
+            if queue_size > 50:
+                excess = queue_size - 50
+                cursor.execute("SELECT id FROM cola_publicacion ORDER BY score ASC LIMIT ?", (excess,))
+                excess_ids = [row[0] for row in await run_db_sync(cursor.fetchall)]
+                await run_db_sync(
+                    cursor.execute,
+                    f"DELETE FROM cola_publicacion WHERE id IN ({','.join('?' * len(excess_ids))})",
+                    tuple(excess_ids)
+                )
+                logging.info(f"Eliminados {len(excess_ids)} elementos para mantener límite de 50.")
+
+            await run_db_sync(conn.commit)
+            logging.info("Revisión avanzada de la cola completada.")
+
+        except Exception as e:
+            logging.error(f"Error revisando la cola de publicaciones: {e}", exc_info=True)
+            bot_status["errors"] += 1
+        finally:
+            await save_bot_state()
 
 async def process_queue():
     global bot_status
-    bot_status["last_task"] = "Processing publication queue"
-    print_section_header("Procesando Cola de Publicación")
-    logging.debug("Starting publication queue processing...")
+    async with queue_lock:  # Evitar concurrencia
+        bot_status["last_task"] = "Processing publication queue"
+        print_section_header("Procesando Cola de Publicación")
+        logging.debug("Starting publication queue processing...")
 
-    try:
-        cursor.execute("SELECT id, title, summary, url, image_data, news_hash, score, source, language, trends FROM cola_publicacion ORDER BY added_at ASC")
-        pending_news = await run_db_sync(cursor.fetchall)
+        try:
+            # Usar cursor local
+            local_cursor = conn.cursor()
+            local_cursor.execute("SELECT id, title, summary, url, image_url, news_hash, score, source, language, trends FROM cola_publicacion ORDER BY added_at ASC")
+            pending_news = await run_db_sync(local_cursor.fetchall)
 
-        if not pending_news:
-            print("ℹ️ La cola de publicación está vacía.")
-            logging.debug("Publication queue is empty.")
-            return
+            if not pending_news:
+                print("ℹ️ La cola de publicación está vacía.")
+                logging.debug("Publication queue is empty.")
+                return
 
-        logging.info(f"Items in publication queue: {len(pending_news)}")
+            logging.info(f"Items in publication queue: {len(pending_news)}")
 
-        async with aiohttp.ClientSession() as session:
-            items_to_remove = []
+            async with aiohttp.ClientSession() as session:
+                items_to_remove = []
 
-            for news in pending_news:
-                id, title, summary, url, image_data_bytes, news_hash, score, source, language, trends_json = news
-                trends = json.loads(trends_json)
-                category = f"write_{language}"
-                current_time_ts = time.time()
+                for news in pending_news:
+                    id, title, summary, url, image_url, news_hash, score, source, language, trends_json = news
+                    trends = json.loads(trends_json)
+                    category = f"write_{language}"
+                    current_time_ts = time.time()
 
-                if current_time_ts < bot_status["twitter_wait_until"].get(category, 0):
-                    logging.debug(f"Escritura pausada para {language}. Omitiendo elemento de la cola (ID: {id}).")
-                    continue
+                    if current_time_ts < bot_status["twitter_wait_until"].get(category, 0):
+                        logging.debug(f"Escritura pausada para {language}. Omitiendo elemento de la cola (ID: {id}).")
+                        continue
 
-                if bot_status["daily_tweets_total"] >= CONFIG["API_LIMITS"]["TWEETS_PER_DAY"]:
-                    logging.debug("Límite diario de tweets alcanzado. Deteniendo procesamiento de la cola.")
-                    break
+                    if bot_status["daily_tweets_total"] >= CONFIG["API_LIMITS"]["TWEETS_PER_DAY"]:
+                        logging.debug("Límite diario de tweets alcanzado. Deteniendo procesamiento de la cola.")
+                        break
 
-                if bot_status["monthly_posts_en"] + bot_status["monthly_posts_es"] >= CONFIG["API_LIMITS"]["MONTHLY_POSTS_TOTAL"]:
-                    logging.debug("Límite mensual total de publicaciones alcanzado. Deteniendo procesamiento de la cola.")
-                    break
+                    if bot_status["monthly_posts_en"] + bot_status["monthly_posts_es"] >= CONFIG["API_LIMITS"]["MONTHLY_POSTS_TOTAL"]:
+                        logging.debug("Límite mensual total de publicaciones alcanzado. Deteniendo procesamiento de la cola.")
+                        break
 
-                last_tweet_time = bot_status.get(f"last_tweet_time_{language}")
-                if last_tweet_time and (current_time_ts - last_tweet_time.timestamp()) < CONFIG["INTERVALS"]["TWEET_COOLDOWN_SECONDS"]:
-                    remaining = CONFIG["INTERVALS"]["TWEET_COOLDOWN_SECONDS"] - (current_time_ts - last_tweet_time.timestamp())
-                    logging.debug(f"Enfriamiento requerido para {language}: {remaining:.1f}s restantes.")
-                    continue
+                    last_tweet_time = bot_status.get(f"last_tweet_time_{language}")
+                    if last_tweet_time and (current_time_ts - last_tweet_time.timestamp()) < CONFIG["INTERVALS"]["TWEET_COOLDOWN_SECONDS"]:
+                        remaining = CONFIG["INTERVALS"]["TWEET_COOLDOWN_SECONDS"] - (current_time_ts - last_tweet_time.timestamp())
+                        logging.debug(f"Enfriamiento requerido para {language}: {remaining/60:.1f} minutos restantes.")
+                        continue
 
-                if await is_published_in_language(title, summary, url, source, language):
-                    logging.info(f"Elemento de la cola ya publicado ({language}): {title[:50]}. Marcando para eliminar (ID: {id}).")
-                    items_to_remove.append(id)
-                    continue
-
-                logging.info(f"Intentando publicar elemento de la cola (ID: {id}) en {language}: {title[:50]}...")
-
-                try:
-                    success = await post_tweet(session, title, summary, url, image_data_bytes, news_hash, score, source, language, trends)
-                    if success:
-                        logging.info(f"Elemento de la cola (ID: {id}) publicado exitosamente en {language}. Marcando para eliminar.")
+                    if await is_published_in_language(title, summary, url, source, language):
+                        logging.info(f"Elemento de la cola ya publicado ({language}): {title[:50]}. Marcando para eliminar (ID: {id}).")
                         items_to_remove.append(id)
-                        await asyncio.sleep(CONFIG["INTERVALS"]["API_REQUEST_DELAY_SECONDS"])
-                    else:
-                        logging.warning(f"No se pudo publicar el elemento de la cola (ID: {id}) en {language}. Permanece en la cola.")
-                except Exception as e:
-                    logging.error(f"Error intentando publicar elemento de la cola (ID: {id}) en {language}: {e}", exc_info=True)
-                    bot_status["errors"] += 1
-                    await save_bot_state()
+                        continue
 
-            if items_to_remove:
-                logging.info(f"Eliminando {len(items_to_remove)} elementos de la cola de publicación.")
-                try:
-                    await run_db_sync(
-                        cursor.execute,
-                        f"DELETE FROM cola_publicacion WHERE id IN ({','.join('?' * len(items_to_remove))})",
-                        tuple(items_to_remove)
-                    )
-                    await run_db_sync(conn.commit)
-                    await save_bot_state()
-                except Exception as e:
-                    logging.error(f"Error eliminando elementos de la cola: {e}", exc_info=True)
-                    bot_status["errors"] += 1
-                    await save_bot_state()
+                    logging.info(f"Intentando publicar elemento de la cola (ID: {id}) en {language}: {title[:50]}...")
 
-    except Exception as e:
-        logging.error(f"Error general procesando la cola de publicación: {e}", exc_info=True)
-        bot_status["errors"] += 1
-        await save_bot_state()
+                    try:
+                        success = await post_tweet(session, title, summary, url, image_url, news_hash, score, source, language, trends)
+                        if success:
+                            logging.info(f"Elemento de la cola (ID: {id}) publicado exitosamente en {language}. Marcando para eliminar.")
+                            items_to_remove.append(id)
+                            bot_status[f"last_tweet_time_{language}"] = datetime.now()
+                            bot_status[f"monthly_posts_{language}"] += 1
+                            logging.info(f"Actualizando last_tweet_time_{language} a {bot_status[f'last_tweet_time_{language}']}")
+                            await save_bot_state()
+                            await asyncio.sleep(CONFIG["INTERVALS"]["API_REQUEST_DELAY_SECONDS"])
+                        else:
+                            logging.warning(f"No se pudo publicar el elemento de la cola (ID: {id}) en {language}. Permanece en la cola.")
+                    except Exception as e:
+                        logging.error(f"Error intentando publicar elemento de la cola (ID: {id}) en {language}: {e}", exc_info=True)
+                        bot_status["errors"] += 1
+                        await save_bot_state()
+
+                if items_to_remove:
+                    logging.info(f"Eliminando {len(items_to_remove)} elementos de la cola de publicación.")
+                    try:
+                        await run_db_sync(
+                            local_cursor.execute,
+                            f"DELETE FROM cola_publicacion WHERE id IN ({','.join('?' * len(items_to_remove))})",
+                            tuple(items_to_remove)
+                        )
+                        await run_db_sync(conn.commit)
+                        await save_bot_state()
+                    except Exception as e:
+                        logging.error(f"Error eliminando elementos de la cola: {e}", exc_info=True)
+                        bot_status["errors"] += 1
+                        await save_bot_state()
+
+        except Exception as e:
+            logging.error(f"Error general procesando la cola de publicación: {e}", exc_info=True)
+            bot_status["errors"] += 1
+            await save_bot_state()
+        finally:
+            local_cursor.close()
 
 async def get_image_from_search(session: aiohttp.ClientSession, query: str) -> bytes | None:
     """
@@ -2869,6 +2926,7 @@ async def publish_news(session: aiohttp.ClientSession, entry: dict, news_hash: s
     summary = entry.get("summary", "")
     source = entry.get("source", "Unknown Source")
     is_tweet = entry.get("is_tweet", False)
+    image_url = entry.get("image_url")
     
     logging.debug(f"Preparando publicación para {language}: {title[:50]} (is_tweet: {is_tweet})")
     
@@ -2888,9 +2946,10 @@ async def publish_news(session: aiohttp.ClientSession, entry: dict, news_hash: s
             return False
     
     image_data = None
-    if entry.get("image_url"):
-        logging.debug(f"Descargando imagen desde {entry['image_url']}")
-        image_data = await download_image(session, entry["image_url"])
+    temp_image_path = None
+    if image_url:
+        logging.debug(f"Descargando imagen desde {image_url}")
+        image_data = await download_image(session, image_url)
         image_data = await optimize_image(image_data) if image_data else None
     
     if not image_data and url and not url.startswith(("patchbot://", "discord://")):
@@ -2905,11 +2964,38 @@ async def publish_news(session: aiohttp.ClientSession, entry: dict, news_hash: s
         logging.debug(f"Buscando imagen en Unsplash para: {search_query}")
         image_data = await get_image_from_search(session, search_query)
     
+    # Reintentar búsqueda de imagen si no hay image_data
+    max_retries = 3
+    retry_count = 0
+    while not image_data and retry_count < max_retries:
+        logging.warning(f"No se encontró imagen para {title[:50]}. Reintentando búsqueda (intento {retry_count + 1}/{max_retries})")
+        if url and not url.startswith(("patchbot://", "discord://")):
+            img_url = await get_image_from_url(session, url)
+            if img_url:
+                image_data = await download_image(session, img_url)
+                image_data = await optimize_image(image_data) if image_data else None
+        if not image_data:
+            search_query = clean_text(title)[:100]
+            image_data = await get_image_from_search(session, search_query)
+        retry_count += 1
+    
+    # Si se obtiene image_data, guardar en un directorio controlado
+    if image_data:
+        temp_dir = os.path.join(os.getcwd(), "temp_images")
+        os.makedirs(temp_dir, exist_ok=True)
+        temp_image_path = os.path.join(temp_dir, f"news_{news_hash}_{language}.jpg")
+        
+        logging.debug(f"Guardando imagen temporal en: {temp_image_path}")
+        async with aiofiles.open(temp_image_path, "wb") as temp_file:
+            await temp_file.write(image_data)
+        logging.debug(f"Imagen temporal guardada en: {temp_image_path}")
+    
     try:
-        result = await post_tweet(session, title, summary, url, image_data, news_hash, score, source, language, trends)
+        result = await post_tweet(session, title, summary, url, temp_image_path if temp_image_path else None, news_hash, score, source, language, trends)
         if result:
             logging.info(f"Publicación exitosa en {language}: {title[:50]}")
-        return result
+        else:
+            logging.warning(f"Fallo al publicar noticia en {language}: {title[:50]}. Intentando encolar")
     except tweepy.TooManyRequests as e:
         logging.warning(f"Error 429 al publicar en {language}: {title[:50]}: {e}")
         return False
@@ -2923,6 +3009,16 @@ async def publish_news(session: aiohttp.ClientSession, entry: dict, news_hash: s
         bot_status["errors"] += 1
         await save_bot_state()
         return False
+    finally:
+        # Limpiar archivo temporal si existe
+        if temp_image_path and os.path.exists(temp_image_path):
+            try:
+                os.remove(temp_image_path)
+                logging.debug(f"Imagen temporal eliminada: {temp_image_path}")
+            except Exception as e:
+                logging.warning(f"Error al eliminar imagen temporal {temp_image_path}: {e}")
+    
+    return result
 
 async def process_publication_queue():
     """
@@ -2995,18 +3091,6 @@ async def process_publication_queue():
         return published_count
 
 async def process_single_news(session: aiohttp.ClientSession, entry: dict, news_hash: str, trends: list[str]) -> bool:
-    """
-    Procesa una noticia individual, la puntúa y decide si publicarla o encolarla.
-    
-    Args:
-        session: Sesión de aiohttp para solicitudes HTTP.
-        entry: Diccionario con los datos de la noticia.
-        news_hash: Hash único de la noticia.
-        trends: Lista de tendencias actuales.
-    
-    Returns:
-        bool: True si la noticia se publicó en al menos un idioma, False si se encoló o descartó.
-    """
     global bot_status
     title = entry.get("title", "Untitled")
     bot_status["last_task"] = f"Processing single news/tweet: {title[:50]}"
@@ -3020,7 +3104,6 @@ async def process_single_news(session: aiohttp.ClientSession, entry: dict, news_
     published_status = {"en": False, "es": False}
     for language in published_status:
         category = f"write_{language}"
-        # Verificar restricciones de publicación
         if time.time() < bot_status["twitter_wait_until"].get(category, 0):
             logging.info(f"No se puede publicar en {language}: En período de espera hasta {datetime.fromtimestamp(bot_status['twitter_wait_until'][category]).strftime('%H:%M:%S')}")
             continue
@@ -3060,7 +3143,6 @@ async def process_single_news(session: aiohttp.ClientSession, entry: dict, news_
         await save_bot_state()
         return True
     
-    # Encolar si no se publicó en algún idioma
     for language in published_status:
         if not published_status[language] and not await is_published_in_language(title, entry.get("summary", ""), entry.get("link"), entry.get("source", "Unknown"), language):
             cursor.execute("SELECT 1 FROM cola_publicacion WHERE news_hash = ? AND language = ?", (news_hash, language))
@@ -3070,12 +3152,12 @@ async def process_single_news(session: aiohttp.ClientSession, entry: dict, news_
                 try:
                     await run_db_sync(
                         cursor.execute,
-                        '''INSERT INTO cola_publicacion (title, summary, url, image_data, news_hash, score, source, language, trends)
+                        '''INSERT INTO cola_publicacion (title, summary, url, image_url, news_hash, score, source, language, trends)
                         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)''',
-                        (title, entry.get("summary", ""), entry.get("link"), None, news_hash, score, entry.get("source", "Unknown"), language, trends_json)
+                        (title, entry.get("summary", ""), entry.get("link"), entry.get("image_url"), news_hash, score, entry.get("source", "Unknown"), language, trends_json)
                     )
                     await run_db_sync(conn.commit)
-                    logging.debug(f"Noticia encolada correctamente para {language}: {title[:50]}")
+                    logging.info(f"Noticia encolada correctamente para {language}: {title[:50]}")
                 except Exception as e:
                     logging.error(f"Error encolando noticia para {language}: {title[:50]}: {e}")
                     bot_status["errors"] += 1
