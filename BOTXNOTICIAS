@@ -73,7 +73,7 @@ CONFIG = {
         # `process_news` también está programada para ejecutarse cada `PROCESS_NEWS_MINUTES`.
         # Para evitar que `process_news` se ejecute con demasiada frecuencia debido a `discord_news_processor`,
         # ajustamos `DISCORD_PROCESSING_SECONDS` para que sea similar o mayor que `PROCESS_NEWS_MINUTES`.
-        "DISCORD_PROCESSING_SECONDS": 10, # ANTERIORMENTE: 30. AHORA: 3600 segundos (60 minutos).
+        "DISCORD_PROCESSING_SECONDS": 3600, # ANTERIORMENTE: 30. AHORA: 3600 segundos (60 minutos).
                                             # Esto alinea la frecuencia de llamada de `process_news` desde `discord_news_processor`
                                             # con su propia programación, haciendo que `process_news` se ejecute aproximadamente cada 58-60 minutos.
 
@@ -2044,166 +2044,99 @@ import re
 import random
 
 async def generate_detailed_tweet(title: str, summary: str, url: str, trends: list[str], language: str) -> str:
-    # Cargar herramientas de IA
+    # Load AI tools
     nlp = spacy.load("en_core_web_sm")
     kw_extractor = KeywordExtractor(n=3, top=5)
     summarizer = TextRankSummarizer()
 
-    # Acortar URL y calcular longitud máxima del contenido
+    # Shorten URL and calculate max content length
     short_url = await shorten_url(url)
-    max_content_length = CONFIG["TWEET"]["MAX_LENGTH"] - len(short_url) - 40
+    max_content_length = CONFIG["TWEET"]["MAX_LENGTH"] - len(short_url) - 50  # Increased buffer for hashtags
 
-    # Análisis semántico
+    # Semantic analysis for news type, emoji, and tone
     title_lower = title.lower()
     summary_lower = summary.lower()
-    news_type = "default"
-    emoji = "🎮"
-    tone = "enthusiastic"
-    if any(kw in title_lower or kw in summary_lower for kw in ["release", "launch", "available", "out now"]):
-        news_type = "release"
-        emoji = "🎮"
-        tone = "enthusiastic"
-    elif any(kw in title_lower or kw in summary_lower for kw in ["update", "patch", "fix", "improvement"]):
-        news_type = "update"
-        emoji = "🔧"
-        tone = "informative"
-    elif any(kw in title_lower or kw in summary_lower for kw in ["announcement", "reveal", "trailer", "teaser"]):
-        news_type = "announce"
-        emoji = "🚨"
-        tone = "urgent"
-    elif any(kw in title_lower or kw in summary_lower for kw in ["free", "deal", "sale", "discount", "offer"]):
-        news_type = "deal"
-        emoji = "💸"
-        tone = "promotional"
-    elif any(kw in title_lower or kw in summary_lower for kw in ["break", "urgent", "alert", "emergency"]):
-        news_type = "urgent"
-        emoji = "🔥"
-        tone = "urgent"
+    news_types = {
+        "release": (["release", "launch", "available", "out now"], "🎮", "enthusiastic"),
+        "update": (["update", "patch", "fix", "improvement"], "🔧", "informative"),
+        "announce": (["announcement", "reveal", "trailer", "teaser"], "🚨", "urgent"),
+        "deal": (["free", "deal", "sale", "discount", "offer"], "💸", "promotional"),
+        "urgent": (["break", "urgent", "alert", "emergency"], "🔥", "urgent")
+    }
+    news_type, emoji, tone = "default", "📰", "enthusiastic"
+    for n_type, (keywords, e, t) in news_types.items():
+        if any(kw in title_lower or kw in summary_lower for kw in keywords):
+            news_type, emoji, tone = n_type, e, t
+            break
 
-    # Extracción de entidades y temas con IA
+    # Extract entities and keywords
     doc = nlp(summary)
     entities = [ent.text for ent in doc.ents if ent.label_ in ["PERSON", "ORG", "PRODUCT", "GPE"]][:2]
     keywords = kw_extractor.extract_keywords(summary)
     topics = [kw[0] for kw in keywords][:3]
 
-    # Seleccionar oraciones clave con resumen extractivo
+    # Select key sentences
     parser = PlaintextParser.from_string(clean_text(summary), Tokenizer("english"))
-    summary_sentences = summarizer(parser.document, 2)  # Top 2 oraciones
-    key_sentences = " ".join([str(sentence) for sentence in summary_sentences])
+    summary_sentences = summarizer(parser.document, 2)
+    content = " ".join(str(sentence) for sentence in summary_sentences)[:max_content_length].strip()
 
-    # Generar contenido atractivo
-    content = key_sentences[:max_content_length].strip()
-
-    # Traducción si es necesario
+    # Translate if needed
     if language == "es" and "twitter" not in url.lower():
         content = await translate_to_spanish(content)
 
-    # Generación de gancho
-    hooks_en = {
-        "release": {
-            "enthusiastic": [
-                "🎮 {entity} just dropped! Dive in!",
-                "🚀 Epic launch for {entity}!",
-                "🕹️ {entity} is out now! Ready to play?"
-            ],
-            "default": ["🎮 {entity} hits the scene."]
+    # Hook templates
+    hooks = {
+        "en": {
+            "release": {"enthusiastic": ["🎮 {entity} just dropped! Dive in!", "🚀 {entity} is LIVE!"],
+                        "default": ["🎮 {entity} hits the scene!"]},
+            "update": {"informative": ["🔧 {entity} updated! See what's new.", "🔧 New {entity} patch!"],
+                       "default": ["🔧 {entity} update out now!"]},
+            "announce": {"urgent": ["🚨 {entity} reveal! Don't miss it!", "🚨 Big {entity} news!"],
+                         "default": ["🚨 {entity} announced!"]},
+            "deal": {"promotional": ["💸 Grab {entity} on sale!", "💸 Hot {entity} deal!"],
+                     "default": ["💸 {entity} discount awaits!"]},
+            "urgent": {"urgent": ["🔥 {entity} alert! Read now!", "🔥 Urgent {entity} update!"],
+                       "default": ["🔥 {entity} news!"]},
+            "default": {"enthusiastic": ["📰 {entity} news to excite you!"],
+                        "default": ["📰 Latest on {entity}!"]}
         },
-        "update": {
-            "informative": [
-                "🔧 {entity} gets a fresh update! Details inside.",
-                "🔧 New patch for {entity}! Check it out."
-            ],
-            "default": ["🔧 Update for {entity} is here."]
-        },
-        "announce": {
-            "urgent": [
-                "🚨 Huge {entity} reveal! Must-see!",
-                "🚨 Breaking: {entity} announcement!"
-            ],
-            "default": ["🚨 {entity} news just dropped!"]
-        },
-        "deal": {
-            "promotional": [
-                "💸 Steal {entity} now! Hot deal!",
-                "💸 Grab {entity} at a discount!"
-            ],
-            "default": ["💸 {entity} on sale! Don't miss out."]
-        },
-        "urgent": {
-            "urgent": [
-                "🔥 Alert! {entity} news you need NOW!",
-                "🔥 Urgent update for {entity}!"
-            ],
-            "default": ["🔥 Important {entity} news!"]
-        },
-        "default": {
-            "enthusiastic": ["🎮 {entity} news to hype you up!"],
-            "default": ["📰 Fresh scoop for {entity}!"]
+        "es": {
+            "release": {"enthusiastic": ["🎮 ¡{entity} ya está aquí! ¡Juega!", "🚀 ¡{entity} lanzado!"],
+                        "default": ["🎮 ¡{entity} llega hoy!"]},
+            "update": {"informative": ["🔧 ¡{entity} actualizado! Descubre más.", "🔧 ¡Parche para {entity}!"],
+                       "default": ["🔧 ¡Actualización de {entity}!"]},
+            "announce": {"urgent": ["🚨 ¡Noticia de {entity}! ¡No te lo pierdas!", "🚨 ¡{entity} revelado!"],
+                         "default": ["🚨 ¡{entity} anunciado!"]},
+            "deal": {"promotional": ["💸 ¡Oferta en {entity}!", "💸 ¡{entity} en rebaja!"],
+                     "default": ["💸 ¡Descuento en {entity}!"]},
+            "urgent": {"urgent": ["🔥 ¡Alerta de {entity}! ¡Lee ya!", "🔥 ¡Noticia urgente de {entity}!"],
+                       "default": ["🔥 ¡Novedades de {entity}!"]},
+            "default": {"enthusiastic": ["📰 ¡{entity} trae noticias emocionantes!"],
+                        "default": ["📰 ¡Lo último de {entity}!"]}
         }
     }
-    hooks_es = {
-        "release": {
-            "enthusiastic": [
-                "🎮 ¡{entity} ya está aquí! ¡A jugar!",
-                "🚀 ¡Lanzamiento épico de {entity}!",
-                "🕹️ ¡{entity} disponible ahora! ¿Listo?"
-            ],
-            "default": ["🎮 {entity} aterriza hoy."]
-        },
-        "update": {
-            "informative": [
-                "🔧 ¡{entity} actualizado! Mira qué hay.",
-                "🔧 Nuevo parche para {entity}!"
-            ],
-            "default": ["🔧 Actualización para {entity}."]
-        },
-        "announce": {
-            "urgent": [
-                "🚨 ¡Bombazo! ¡{entity} revelado!",
-                "🚨 ¡Anuncio urgente de {entity}!"
-            ],
-            "default": ["🚨 ¡Gran noticia de {entity}!"]
-        },
-        "deal": {
-            "promotional": [
-                "💸 ¡Oferta! ¡Consigue {entity} ya!",
-                "💸 ¡{entity} en rebaja! Aprovecha."
-            ],
-            "default": ["💸 {entity} en oferta. ¡No te lo pierdas!"]
-        },
-        "urgent": {
-            "urgent": [
-                "🔥 ¡Alerta! ¡Noticia urgente de {entity}!",
-                "🔥 ¡Actualización urgente para {entity}!"
-            ],
-            "default": ["🔥 Noticia importante de {entity}."]
-        },
-        "default": {
-            "enthusiastic": ["🎮 ¡Noticia emocionante de {entity}!"],
-            "default": ["📰 Lo último de {entity}."]
-        }
-    }
-    hook_dict = hooks_es if language == "es" else hooks_en
-    options = hook_dict.get(news_type, {}).get(tone, hook_dict["default"]["enthusiastic"])
-    hook = random.choice(options).format(entity=entities[0] if entities else "juego")
+    hook_dict = hooks[language]
+    hook = random.choice(hook_dict.get(news_type, {}).get(tone, hook_dict["default"]["enthusiastic"]))\
+           .format(entity=entities[0] if entities else "game")
 
-    # Generación de hashtags
-    hashtag_candidates = [re.sub(r"\s+", "", e) for e in entities + topics if len(e) <= 15]
-    for trend in trends:
-        clean_trend = re.sub(r"\s+", "", trend)
+    # Generate hashtags: prioritize entities and topics, then trends
+    hashtag_candidates = [re.sub(r"[^\w\s]", "", e).replace(" ", "") for e in entities + topics if len(e) <= 15]
+    for trend in trends[:2]:  # Limit to 2 trends for relevance
+        clean_trend = re.sub(r"[^\w\s]", "", trend).replace(" ", "")
         if len(clean_trend) <= 15 and clean_trend not in hashtag_candidates:
             hashtag_candidates.append(clean_trend)
+    hashtag_candidates = list(dict.fromkeys(hashtag_candidates))[:3]  # Remove duplicates, limit to 3
     if not hashtag_candidates:
-        hashtag_candidates = ["GamingNews", "Videojuegos"] if language == "es" else ["GamingNews", "VideoGames"]
-    hashtags = " ".join(f"#{h}" for h in random.sample(hashtag_candidates, min(2, len(hashtag_candidates))))
+        hashtag_candidates = ["Videojuegos", "Gaming"] if language == "es" else ["Gaming", "VideoGames"]
+    hashtags = " ".join(f"#{h}" for h in hashtag_candidates)
 
-    # Construcción del tweet
+    # Build tweet
     tweet = f"{hook} {content} {short_url} {hashtags}"
     if len(tweet) > CONFIG["TWEET"]["MAX_LENGTH"]:
-        content = content[:max_content_length - len(hook) - len(hashtags) - 15] + "..."
+        content = content[:max_content_length - len(hook) - len(hashtags) - len(short_url) - 5] + "..."
         tweet = f"{hook} {content} {short_url} {hashtags}"
 
-    return tweet
+    return tweet.strip()
 
 import aiohttp
 import os
