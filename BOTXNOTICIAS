@@ -2091,157 +2091,213 @@ def generate_hashtags(entities: List[str], topics: List[str], trends: List[str],
 
 async def generate_detailed_tweet(title: str, summary: str, url: str, trends: List[str], language: str = "en") -> str:
     """
-    Genera un tuit atractivo, humano y emocional basado en el título, resumen, URL y tendencias.
-    
+    Genera un tuit largo, vibrante y súper gamer, maximizando los 280 caracteres con un tono humano y emocional.
+
     Args:
         title: Título de la noticia.
         summary: Resumen de la noticia.
         url: Enlace a la noticia.
         trends: Lista de tendencias relevantes.
         language: Idioma del tuit ("en" para inglés, "es" para español).
-    
+
     Returns:
-        Tuit generado con un tono natural, emocional y optimizado para engagement.
+        Tuit optimizado para engagement, con contenido extenso y tono apasionado.
     """
     # Configuración inicial
     CONFIG = {"TWEET": {"MAX_LENGTH": 280}}  # Longitud máxima de un tuit
-    
+
+    # Simulación de acortamiento de URL (reemplazar con API como Bitly)
+    short_url = url[:20] + "..."
+    max_content_length = CONFIG["TWEET"]["MAX_LENGTH"] - 50  # Buffer inicial reducido para maximizar contenido
+
     # Cargar modelo spaCy según idioma
     try:
         nlp = spacy.load("en_core_web_sm" if language == "en" else "es_core_news_sm")
-    except Exception as e:
-        print(f"Error cargando modelo spaCy: {e}")
-        return f"¡Ups! Algo salió mal al procesar la noticia. Mira los detalles aquí: {url} #Gaming"
+    except Exception:
+        return f"¡Vaya! Algo falló, pero la noticia te espera: {short_url} #{'Videojuegos' if language == 'es' else 'Gaming'} 😎"
 
+    # Inicializar herramientas
     kw_extractor = KeywordExtractor(n=3, top=5, lan=language)
     summarizer = TextRankSummarizer()
 
-    # Acortar URL y calcular longitud máxima del contenido
-    short_url = await shorten_url(url)
-    max_content_length = CONFIG["TWEET"]["MAX_LENGTH"] - len(short_url) - 70  # Buffer para hooks, hashtags y emojis
+    # Limpiar texto: normalizar espacios y eliminar caracteres no deseados
+    summary = re.sub(r'\s+', ' ', summary.strip())
 
     # Determinar tipo de noticia, emoji y tono
-    news_type, emoji, tone = get_news_type_and_tone(title, summary)
+    title_lower, summary_lower = title.lower(), summary.lower()
+    news_types: Dict[str, tuple[list[str], str, str]] = {
+        "release": (
+            ["release", "launch", "available", "out now", "estreno", "lanzamiento", "disponible"],
+            "🎮", "hype"
+        ),
+        "update": (
+            ["update", "patch", "fix", "improvement", "actualización", "parche", "mejora"],
+            "🔧", "chill"
+        ),
+        "announce": (
+            ["announcement", "reveal", "trailer", "teaser", "anuncio", "revelación", "avance"],
+            "🚨", "hype"
+        ),
+        "deal": (
+            ["free", "deal", "sale", "discount", "offer", "gratis", "oferta", "descuento"],
+            "💸", "excited"
+        ),
+        "urgent": (
+            ["break", "urgent", "alert", "emergency", "urgente", "alerta", "emergencia"],
+            "🔥", "urgent"
+        ),
+    }
+
+    news_type, emoji, tone = "default", "📰", "neutral"
+    for n_type, (keywords, e, t) in news_types.items():
+        if any(kw in title_lower or kw in summary_lower for kw in keywords):
+            news_type, emoji, t = n_type, e, t
+            # Escalar a tono "super_hype" para noticias importantes
+            if t in ["hype", "excited"] and any(w in title_lower + summary_lower for w in ["major", "epic", "huge", "épico", "enorme"]):
+                tone = "super_hype"
+            else:
+                tone = t
+            break
 
     # Extraer entidades y palabras clave
     doc = nlp(summary)
     entities = [ent.text for ent in doc.ents if ent.label_ in ["PERSON", "ORG", "PRODUCT", "GPE"]][:2]
     if not entities:
-        entities = [title.split()[0] or "Game"]  # Fallback más natural
-    
+        entities = [title.split()[0] or "Juego"] if language == "es" else [title.split()[0] or "Game"]
+
     keywords = kw_extractor.extract_keywords(summary)
     topics = [kw[0] for kw in keywords][:3]
     if not topics:
-        topics = ["noticias", "juegos"] if language == "es" else ["news", "gaming"]
+        topics = ["noticias", "gaming"] if language == "es" else ["news", "gaming"]
 
-    # Resumir contenido
-    parser = PlaintextParser.from_string(clean_text(summary), Tokenizer("english" if language == "en" else "spanish"))
-    summary_sentences = summarizer(parser.document, 2)
-    content = " ".join(str(sentence) for sentence in summary_sentences)[:max_content_length].strip()
+    # Resumir contenido: usar más oraciones para un tuit más largo
+    parser = PlaintextParser.from_string(summary, Tokenizer("english" if language == "en" else "spanish"))
+    summary_sentences = summarizer(parser.document, 3)  # Aumentar a 3 oraciones para más contenido
+    content = " ".join(str(sentence) for sentence in summary_sentences).strip()
     if not content:
-        content = summary[:max_content_length].strip() or "¡Nueva noticia! Mira más detalles."
+        content = summary.strip() or ("¡Noticia fresca! Descubre más aquí." if language == "es" else "Fresh news! Dive in for more.")
 
-    # Traducir si es necesario
+    # Traducir si es necesario (simulación, reemplazar con API como DeepL)
     if language == "es" and "twitter" not in url.lower():
-        content = await translate_to_spanish(content)
+        content = content  # Placeholder para traducción
 
-    # Plantillas de hooks más humanas, emocionales y variadas
+    # Plantillas de hooks ultra gamer y emocionales
     hooks: Dict[str, Dict[str, Dict[str, List[str]]]] = {
         "en": {
             "release": {
-                "excited": [
-                    "🎮 {entity} just dropped! Get ready for an epic adventure! 😍",
-                    "🚀 {entity} is LIVE! Who's jumping in first? 🔥",
-                    "🎮 {entity} is here to steal your weekend! 😎"
+                "hype": [
+                    "🎮 {entity} DROPPED! Time to crank up the hype and dive in! 😍",
+                    "🚀 {entity} is LIVE! Grab your gear, it’s game time! 🔥",
+                    "🎮 {entity} hits like a boss! Ready to grind all night? 😎"
                 ],
-                "neutral": ["🎮 {entity} is out now! Ready to play?"]
+                "super_hype": [
+                    "🎮 {entity} IS HERE AND IT’S PURE FIRE! 😱 Let’s GOOO!",
+                    "🚀 EPIC {entity} launch! This is gonna blow your mind! 🔥",
+                    "🎮 {entity} just changed the game! Jump in NOW! 😍"
+                ],
+                "neutral": ["🎮 {entity} is out! Ready to jump in?"]
             },
             "update": {
-                "informative": [
-                    "🔧 {entity} got a shiny new update! Check out the fixes! 👀",
-                    "🔧 New {entity} patch dropped! Smoother gameplay awaits! 😊",
-                    "🔧 {entity} just leveled up! See what's new! ✨"
+                "chill": [
+                    "🔧 {entity} got a fresh update! Smoother vibes incoming! 😎",
+                    "🔧 New {entity} patch! Gameplay just leveled up! 👌",
+                    "🔧 {entity} tweaked! Check out the new goodies! 😊"
                 ],
-                "neutral": ["🔧 {entity} update is live! Explore the changes."]
+                "neutral": ["🔧 {entity} update is live! See what’s new."]
             },
             "announce": {
                 "hype": [
-                    "🚨 {entity} just dropped a massive reveal! You NEED to see this! 😱",
-                    "🚨 Huge {entity} news! Get hyped! 🔥",
-                    "🚨 {entity} teaser alert! This is gonna be wild! 😎"
+                    "🚨 {entity} reveal just BLEW MY MIND! 😱 Hype train’s rolling!",
+                    "🚨 {entity} teaser dropped! This is gonna SLAP! 🔥",
+                    "🚨 {entity} news! Get ready for something HUGE! 😎"
                 ],
-                "neutral": ["🚨 {entity} announcement! Stay tuned for more."]
+                "super_hype": [
+                    "🚨 {entity} announcement is INSANE! You NEED this! 😱",
+                    "🚨 {entity} just dropped a BOMB! Hype at 1000%! 🔥",
+                    "🚨 {entity} reveal is NEXT-LEVEL! Let’s gooo! 😍"
+                ],
+                "neutral": ["🚨 {entity} news! Stay tuned for more."]
             },
             "deal": {
-                "promotional": [
-                    "💸 {entity} on sale! Grab this steal before it’s gone! 🤑",
-                    "💸 Epic deal on {entity}! Don’t miss out! 😱",
-                    "💸 {entity} at a crazy discount! Time to save big! 🎉"
+                "excited": [
+                    "💸 {entity} on MEGA sale! Snag it before it vanishes! 🤑",
+                    "💸 Yo, {entity} is stupid cheap! Grab it NOW! 😱",
+                    "💸 Insane {entity} deal! Your wallet’s gonna love this! 🎉"
                 ],
-                "neutral": ["💸 Sweet deal on {entity}! Check it out."]
+                "neutral": ["💸 Sweet deal on {entity}! Worth a peek."]
             },
             "urgent": {
                 "urgent": [
-                    "🔥 {entity} breaking news! This is HUGE! 🚨",
-                    "🔥 Urgent {entity} alert! You gotta know this! 😲",
-                    "🔥 {entity} just shook things up! Read now! 😱"
+                    "🔥 {entity} BREAKING news! This is WILD! 😲",
+                    "🔥 {entity} alert! You gotta see this ASAP! 🚨",
+                    "🔥 {entity} just shook the gaming world! 😱"
                 ],
-                "neutral": ["🔥 {entity} news alert! Details here."]
+                "neutral": ["🔥 {entity} news alert! Check it out."]
             },
             "default": {
                 "neutral": [
-                    "📰 Hot {entity} news! Dive into the details! 👀",
-                    "📰 {entity} just made waves! Check it out! 😊",
-                    "📰 Fresh scoop on {entity}! Don’t miss it! ✨"
+                    "📰 Yo, {entity} news just dropped! Dive into the action! 😎",
+                    "📰 {entity} is making waves! Get the scoop! 😊",
+                    "📰 Fresh {entity} vibes! See what’s cooking! ✨"
                 ]
             }
         },
         "es": {
             "release": {
-                "excited": [
-                    "🎮 ¡{entity} ya está aquí! ¡Prepárate para una aventura épica! 😍",
-                    "🚀 ¡{entity} llegó con todo! ¿Quién se lanza primero? 🔥",
-                    "🎮 ¡{entity} va a robarte el fin de semana! 😎"
+                "hype": [
+                    "🎮 ¡{entity} ya salió! ¡Prepárate para viciarte a tope! 😍",
+                    "🚀 ¡{entity} está aquí! ¡A darle caña sin parar! 🔥",
+                    "🎮 ¡{entity} llega como jefe! ¿Listo para el vicio total? 😎"
                 ],
-                "neutral": ["🎮 ¡{entity} ya salió! ¿Listo para jugar?"]
+                "super_hype": [
+                    "🎮 ¡{entity} ES UNA LOCURA TOTAL! ¡A jugar YA! 😱",
+                    "🚀 ¡Lanzamiento ÉPICO de {entity}! ¡Esto es BRUTAL! 🔥",
+                    "🎮 ¡{entity} redefine el juego! ¡Métete de cabeza! 😍"
+                ],
+                "neutral": ["🎮 ¡{entity} ya está aquí! ¿Te lanzas?"]
             },
             "update": {
-                "informative": [
-                    "🔧 ¡{entity} tiene actualización nueva! Mira los cambios. 👀",
-                    "🔧 ¡Parche nuevo para {entity}! ¡Juega mejor que nunca! 😊",
-                    "🔧 ¡{entity} sube de nivel! Descubre qué hay de nuevo. ✨"
+                "chill": [
+                    "🔧 ¡{entity} se puso guapo con esta actualización! 😎",
+                    "🔧 ¡Parche nuevo para {entity}! ¡Juega como nunca! 👌",
+                    "🔧 ¡{entity} renovado! Mira los cambios chidos. 😊"
                 ],
-                "neutral": ["🔧 ¡Actualización de {entity} disponible! Revisa los detalles."]
+                "neutral": ["🔧 ¡Actualización de {entity}! Revisa qué hay."]
             },
             "announce": {
                 "hype": [
-                    "🚨 ¡Notición de {entity}! ¡Tienes que ver esto! 😱",
-                    "🚨 ¡{entity} trae sorpresas épicas! ¡A darle hype! 🔥",
-                    "🚨 ¡Avance de {entity}! ¡Esto va a ser brutal! 😎"
+                    "🚨 ¡Notición de {entity}! ¡Te va a volar la cabeza! 😱",
+                    "🚨 ¡{entity} trae un avance BRUTAL! ¡A tope con el hype! 🔥",
+                    "🚨 ¡Noticia de {entity}! ¡El hype está por las nubes! 😎"
                 ],
-                "neutral": ["🚨 ¡Anuncio de {entity}! Mantente al tanto."]
+                "super_hype": [
+                    "🚨 ¡{entity} trae un BOMBAZO! ¡Tienes que verlo YA! 😱",
+                    "🚨 ¡Anuncio ÉPICO de {entity}! ¡Hype al límite! 🔥",
+                    "🚨 ¡{entity} lo rompió todo! ¡Prepárate ya! 😍"
+                ],
+                "neutral": ["🚨 ¡Noticia de {entity}! Mantente al tanto."]
             },
             "deal": {
-                "promotional": [
-                    "💸 ¡Ofertón en {entity}! ¡Cómpralo antes de que vuele! 🤑",
-                    "💸 ¡{entity} en rebaja! ¡No dejes pasar esta! 😱",
-                    "💸 ¡Chollo épico en {entity}! ¡Ahorra a lo grande! 🎉"
+                "excited": [
+                    "💸 ¡Ofertón ÉPICO en {entity}! ¡Cómpralo antes que vuele! 🤑",
+                    "💸 ¡{entity} está regalado! ¡Agárralo YA! 😱",
+                    "💸 ¡Chollo brutal en {entity}! ¡Ahorra a lo grande! 🎉"
                 ],
                 "neutral": ["💸 ¡Buena oferta en {entity}! Échale un ojo."]
             },
             "urgent": {
                 "urgent": [
-                    "🔥 ¡Noticia bomba de {entity}! ¡Esto es ENORME! 🚨",
-                    "🔥 ¡Alerta urgente de {entity}! ¡Tienes que saberlo! 😲",
-                    "🔥 ¡{entity} acaba de revolucionarlo todo! ¡Lee ya! 😱"
+                    "🔥 ¡Noticia BOMBA de {entity}! ¡Es ENORME! 😲",
+                    "🔥 ¡Alerta urgente de {entity}! ¡Lee esto YA! 🚨",
+                    "🔥 ¡{entity} cambió TODO! ¡No te lo pierdas! 😱"
                 ],
-                "neutral": ["🔥 ¡Novedades de {entity}! Más detalles aquí."]
+                "neutral": ["🔥 ¡Novedades de {entity}! Mira los detalles."]
             },
             "default": {
                 "neutral": [
-                    "📰 ¡Noticia caliente de {entity}! Mira los detalles. 👀",
+                    "📰 ¡Noticia fresca de {entity}! ¡A darle un ojo! 😎",
                     "📰 ¡{entity} está dando que hablar! Descúbrelo. 😊",
-                    "📰 ¡Lo último de {entity}! ¡No te lo pierdas! ✨"
+                    "📰 ¡Lo último de {entity}! ¡No te quedes fuera! ✨"
                 ]
             }
         }
@@ -2253,13 +2309,37 @@ async def generate_detailed_tweet(title: str, summary: str, url: str, trends: Li
     hook = random.choice(hook_list).format(entity=entities[0])
 
     # Generar hashtags
-    hashtags = generate_hashtags(entities, topics, trends, language)
+    hashtag_candidates = [re.sub(r"[^\w\s]", "", e).replace(" ", "") for e in entities + topics if len(e) <= 15]
+    for trend in trends[:2]:
+        clean_trend = re.sub(r"[^\w\s]", "", trend).replace(" ", "")
+        if len(clean_trend) <= 15 and clean_trend not in hashtag_candidates:
+            hashtag_candidates.append(clean_trend)
+    hashtag_candidates = list(dict.fromkeys(hashtag_candidates))[:3]
+    if not hashtag_candidates:
+        hashtag_candidates = ["Videojuegos", "Gaming"] if language == "es" else ["Gaming", "VideoGames"]
+    hashtags = " ".join(f"#{h}" for h in hashtag_candidates)
+
+    # Ajustar longitud dinámicamente para maximizar contenido
+    max_content_length = CONFIG["TWEET"]["MAX_LENGTH"] - len(hook) - len(hashtags) - len(short_url) - len(emoji) - 5
+    content = content[:max_content_length].strip()
+    if not content:
+        content = summary[:max_content_length].strip() or ("¡Noticia fresca! Descubre más aquí." if language == "es" else "Fresh news! Dive in for more.")
 
     # Construir el tuit
     tweet = f"{emoji} {hook} {content} {short_url} {hashtags}"
     if len(tweet) > CONFIG["TWEET"]["MAX_LENGTH"]:
-        content = content[:max_content_length - len(hook) - len(hashtags) - len(short_url) - len(emoji) - 5] + "..."
+        content = content[:max_content_length - 5] + "..."  # Truncar con elipsis
         tweet = f"{emoji} {hook} {content} {short_url} {hashtags}"
+
+    # Si el tuit es demasiado corto, añadir más detalles del resumen
+    if len(tweet) < CONFIG["TWEET"]["MAX_LENGTH"] - 20:
+        extra_content = summary[len(content):CONFIG["TWEET"]["MAX_LENGTH"] - len(tweet) - 5].strip()
+        if extra_content:
+            content += " " + extra_content
+            tweet = f"{emoji} {hook} {content} {short_url} {hashtags}"
+            if len(tweet) > CONFIG["TWEET"]["MAX_LENGTH"]:
+                content = content[:max_content_length - 5] + "..."
+                tweet = f"{emoji} {hook} {content} {short_url} {hashtags}"
 
     return tweet.strip()
 
